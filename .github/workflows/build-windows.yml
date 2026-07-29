@@ -2,6 +2,7 @@ name: Windows 빌드
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     tags:
       - "v*"

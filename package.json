@@ -7,9 +7,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:icon": "tauri icon src-tauri/icon-source.png"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
     "typescript": "^5.5.4",
     "vite": "^5.4.8"
   }

@@ -1,0 +1,66 @@
+@echo off
+chcp 65001 >nul
+setlocal
+cd /d "%~dp0"
+title OverlayPlacer - 데스크톱 실행
+
+echo.
+echo  ============================================
+echo   OverlayPlacer  -  데스크톱 창으로 실행
+echo  ============================================
+echo.
+
+where node >nul 2>nul
+if errorlevel 1 (
+    echo  [오류] Node.js를 찾을 수 없습니다.
+    echo.
+    echo  https://nodejs.org 에서 LTS 버전을 설치한 뒤
+    echo  이 파일을 다시 실행하세요.
+    echo.
+    pause
+    exit /b 1
+)
+
+where cargo >nul 2>nul
+if errorlevel 1 (
+    echo  [오류] Rust를 찾을 수 없습니다.
+    echo.
+    echo  데스크톱 앱은 Rust가 필요합니다.
+    echo  https://rustup.rs 에서 설치한 뒤 이 파일을 다시 실행하세요.
+    echo  설치 중 Visual Studio C++ 빌드 도구를 함께 설치하라는
+    echo  안내가 나오면 그대로 진행하면 됩니다.
+    echo.
+    echo  브라우저에서 바로 쓰려면 [실행-웹.bat] 을 사용하세요.
+    echo.
+    pause
+    exit /b 1
+)
+
+if not exist "node_modules\" (
+    echo  [1/2] 처음 실행이라 필요한 파일을 내려받습니다. 몇 분 걸릴 수 있습니다.
+    echo.
+    call npm install
+    if errorlevel 1 goto failed
+    echo.
+)
+
+if not exist "src-tauri\icons\icon.ico" (
+    echo  [2/2] 앱 아이콘을 생성합니다.
+    echo.
+    call npm run tauri:icon
+    if errorlevel 1 goto failed
+    echo.
+)
+
+echo  앱을 시작합니다. 첫 실행은 Rust 컴파일 때문에 수 분 걸립니다.
+echo  종료하려면 앱 창을 닫으세요.
+echo.
+call npm run tauri:dev
+exit /b 0
+
+:failed
+echo.
+echo  [오류] 준비 과정에서 실패했습니다. 위 메시지를 확인하세요.
+echo.
+pause
+exit /b 1

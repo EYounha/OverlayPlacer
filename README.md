@@ -27,27 +27,34 @@ AI가 생성한 레이아웃 JSON을 불러와 시각적으로 좌표·크기·�
 - **히스토리** — 실행 취소/다시 실행 200단계, 브라우저 자동 저장
 - **입출력** — 프로젝트 파일(.opl.json), AI용 클린 JSON, 클립보드 복사/가져오기, 드래그 앤드 드롭
 
-## 실행
+## 실행 · Windows
+
+저장소 최상위의 배치 파일을 더블클릭하면 됩니다. 필요한 준비 작업은 각 파일이 알아서 처리합니다.
+
+| 파일 | 하는 일 | 필요한 것 |
+| --- | --- | --- |
+| **실행-웹.bat** | 브라우저에서 바로 실행 | [Node.js](https://nodejs.org) |
+| **실행-데스크톱.bat** | 데스크톱 창으로 실행 | Node.js + [Rust](https://rustup.rs) |
+| **빌드-설치파일.bat** | Windows 설치 파일(msi/nsis) 생성 | Node.js + Rust |
+
+첫 실행 시 의존성 설치와 앱 아이콘 생성이 자동으로 진행되며 몇 분 걸립니다.
+Rust 컴파일이 포함되는 데스크톱 실행·빌드는 최초 1회에 10분 이상 소요될 수 있습니다.
+빌드된 설치 파일은 `src-tauri/target/release/bundle/`에 생성되고, 완료 시 해당 폴더가 자동으로 열립니다.
+
+## 실행 · 기타 환경
+
+macOS·Linux 등 배치 파일을 쓸 수 없는 환경에서는 npm 스크립트를 직접 사용합니다.
 
 ```bash
 npm install
-npm run dev        # 개발 서버 (http://localhost:5173)
-npm run build      # 정적 빌드 → dist/
-npm run preview    # 빌드 결과 미리보기
+npm run dev            # 개발 서버 (http://localhost:5173)
+npm run build          # 정적 빌드 → dist/
+npm run tauri:icon     # 앱 아이콘 생성 (최초 1회)
+npm run tauri:dev      # 데스크톱 창에서 실행
+npm run tauri:build    # 설치 파일 빌드
 ```
 
-빌드 결과물은 정적 파일이므로 GitHub Pages 등 어디에나 배포할 수 있습니다.
-
-## Windows 데스크톱 패키징 (Tauri)
-
-`src-tauri/`에 Tauri 2 구성이 포함되어 있습니다. [Rust 툴체인](https://www.rust-lang.org/tools/install)이 필요합니다.
-
-```bash
-npm install -D @tauri-apps/cli
-npx tauri icon path/to/icon.png   # 앱 아이콘 생성 (최초 1회)
-npx tauri dev                     # 데스크톱 창에서 개발 실행
-npx tauri build                   # Windows 설치 파일(msi/nsis) 빌드
-```
+웹 빌드 결과물(`dist/`)은 정적 파일이므로 GitHub Pages 등 어디에나 배포할 수 있습니다.
 
 ## 문서
 

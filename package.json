@@ -1,0 +1,16 @@
+{
+  "name": "overlayplacer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AI 협업형 UI 레이아웃 배치 편집기",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vite": "^5.4.8"
+  }
+}

@@ -1,0 +1,172 @@
+import { store } from "./state/store";
+import {
+  copySelection, cutSelection, deleteSelection, duplicateSelection,
+  exportAIFile, groupSelection, openProjectFile, paste, reorder,
+  saveProjectFile, selectAll, selectParent, ungroupSelection
+} from "./actions";
+import { findElement } from "./model/doc";
+import { worldInfoOf, writeLocalRect } from "./model/geometry";
+import type { CanvasView } from "./ui/canvasView";
+import { closeMenus } from "./ui/contextmenu";
+
+export function initShortcuts(canvas: CanvasView): void {
+  window.addEventListener("keydown", (e) => {
+    if (isEditable(e.target)) return;
+    const ctrl = e.ctrlKey || e.metaKey;
+    const key = e.key.toLowerCase();
+
+    if (ctrl) {
+      switch (key) {
+        case "z":
+          e.preventDefault();
+          if (e.shiftKey) store.redo();
+          else store.undo();
+          return;
+        case "y":
+          e.preventDefault();
+          store.redo();
+          return;
+        case "c":
+          e.preventDefault();
+          copySelection();
+          return;
+        case "x":
+          e.preventDefault();
+          cutSelection();
+          return;
+        case "v":
+          e.preventDefault();
+          paste();
+          return;
+        case "d":
+          e.preventDefault();
+          duplicateSelection();
+          return;
+        case "a":
+          e.preventDefault();
+          selectAll();
+          return;
+        case "g":
+          e.preventDefault();
+          if (e.shiftKey) ungroupSelection();
+          else groupSelection();
+          return;
+        case "s":
+          e.preventDefault();
+          saveProjectFile();
+          return;
+        case "e":
+          e.preventDefault();
+          exportAIFile();
+          return;
+        case "o":
+          e.preventDefault();
+          openProjectFile();
+          return;
+        case "0":
+          e.preventDefault();
+          canvas.fitToView();
+          return;
+        case "1":
+          e.preventDefault();
+          canvas.zoomTo100();
+          return;
+        case "=":
+        case "+":
+          e.preventDefault();
+          canvas.setZoom(store.view.zoom * 1.25);
+          return;
+        case "-":
+          e.preventDefault();
+          canvas.setZoom(store.view.zoom / 1.25);
+          return;
+        case "'":
+          e.preventDefault();
+          store.updateSettings({ showGrid: !store.settings.showGrid });
+          return;
+        case "]":
+          e.preventDefault();
+          reorder(e.shiftKey ? "front" : "forward");
+          return;
+        case "[":
+          e.preventDefault();
+          reorder(e.shiftKey ? "back" : "backward");
+          return;
+      }
+      return;
+    }
+
+    switch (key) {
+      case "v":
+        store.setTool("select");
+        return;
+      case "h":
+        store.setTool("hand");
+        return;
+      case "r":
+      case "b":
+        store.setTool("draw");
+        return;
+      case "delete":
+      case "backspace":
+        e.preventDefault();
+        deleteSelection();
+        return;
+      case "escape":
+        closeMenus();
+        if (store.selection.length === 1) {
+          const found = findElement(store.doc, store.selection[0]);
+          if (found?.parent) {
+            selectParent();
+            return;
+          }
+        }
+        store.clearSelection();
+        return;
+      case "arrowleft":
+      case "arrowright":
+      case "arrowup":
+      case "arrowdown": {
+        if (store.selection.length === 0) return;
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        const dx = key === "arrowleft" ? -step : key === "arrowright" ? step : 0;
+        const dy = key === "arrowup" ? -step : key === "arrowdown" ? step : 0;
+        nudgeSelection(dx, dy);
+        return;
+      }
+    }
+  });
+
+  window.addEventListener("beforeunload", (e) => {
+    if (store.dirty) {
+      e.preventDefault();
+    }
+  });
+}
+
+function nudgeSelection(dx: number, dy: number): void {
+  const ids = store.topLevelSelection().filter((id) => {
+    const f = findElement(store.doc, id);
+    return f && !f.el.locked;
+  });
+  if (ids.length === 0) return;
+  store.beginChange();
+  for (const id of ids) {
+    const f = findElement(store.doc, id);
+    const info = worldInfoOf(store.doc, id);
+    if (!f || !info) continue;
+    writeLocalRect(f.el, info.parentW, info.parentH, {
+      x: info.localRect.x + dx,
+      y: info.localRect.y + dy,
+      w: info.localRect.w,
+      h: info.localRect.h
+    });
+  }
+  store.commit();
+}
+
+function isEditable(t: EventTarget | null): boolean {
+  return t instanceof HTMLElement &&
+    (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+}

@@ -2,11 +2,11 @@
 chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
-title OverlayPlacer - 설치 파일 빌드
+title OverlayPlacer - 실행 파일 빌드
 
 echo.
 echo  ============================================
-echo   OverlayPlacer  -  Windows 설치 파일 빌드
+echo   OverlayPlacer  -  Windows 실행 파일 빌드
 echo  ============================================
 echo.
 
@@ -25,7 +25,7 @@ where cargo >nul 2>nul
 if errorlevel 1 (
     echo  [오류] Rust를 찾을 수 없습니다.
     echo.
-    echo  설치 파일 빌드에는 Rust가 필요합니다.
+    echo  실행 파일 빌드에는 Rust가 필요합니다.
     echo  https://rustup.rs 에서 설치한 뒤 이 파일을 다시 실행하세요.
     echo  설치 중 Visual Studio C++ 빌드 도구를 함께 설치하라는
     echo  안내가 나오면 그대로 진행하면 됩니다.
@@ -50,7 +50,7 @@ if not exist "src-tauri\icons\icon.ico" (
     echo.
 )
 
-echo  [3/3] 설치 파일을 빌드합니다.
+echo  [3/3] 실행 파일을 빌드합니다.
 echo  첫 빌드는 Rust 컴파일 때문에 10분 이상 걸릴 수 있습니다.
 echo.
 call npm run tauri:build
@@ -61,12 +61,14 @@ echo  ============================================
 echo   빌드 완료
 echo  ============================================
 echo.
-echo  설치 파일 위치:
-echo  src-tauri\target\release\bundle\
+echo  실행 파일:
+echo  src-tauri\target\release\overlayplacer.exe
+echo.
+echo  설치 없이 그대로 실행됩니다. 원하는 곳으로 옮겨서 쓰세요.
 echo.
 
-if exist "src-tauri\target\release\bundle\" (
-    start "" "src-tauri\target\release\bundle\"
+if exist "src-tauri\target\release\overlayplacer.exe" (
+    explorer /select,"%CD%\src-tauri\target\release\overlayplacer.exe"
 )
 pause
 exit /b 0

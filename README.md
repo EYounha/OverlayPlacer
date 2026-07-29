@@ -35,11 +35,21 @@ AI가 생성한 레이아웃 JSON을 불러와 시각적으로 좌표·크기·�
 | --- | --- | --- |
 | **실행-웹.bat** | 브라우저에서 바로 실행 | [Node.js](https://nodejs.org) |
 | **실행-데스크톱.bat** | 데스크톱 창으로 실행 | Node.js + [Rust](https://rustup.rs) |
-| **빌드-설치파일.bat** | Windows 설치 파일(msi/nsis) 생성 | Node.js + Rust |
+| **빌드-실행파일.bat** | 단독 실행 파일(exe) 생성 | Node.js + Rust |
+| **깃허브에서-빌드.bat** | 소스를 받아와 exe까지 한 번에 | Node.js + Rust + [Git](https://git-scm.com/download/win) |
+
+`깃허브에서-빌드.bat`은 저장소를 먼저 받아두지 않아도 됩니다. 이 파일 하나만
+아무 폴더에 두고 실행하면 옆에 소스를 내려받아 빌드까지 진행하며, 두 번째부터는
+바뀐 부분만 받아 다시 빌드합니다. 다른 브랜치를 쓰려면 파일 안의 `BRANCH` 값을
+바꾸면 됩니다.
 
 첫 실행 시 의존성 설치와 앱 아이콘 생성이 자동으로 진행되며 몇 분 걸립니다.
 Rust 컴파일이 포함되는 데스크톱 실행·빌드는 최초 1회에 10분 이상 소요될 수 있습니다.
-빌드된 설치 파일은 `src-tauri/target/release/bundle/`에 생성되고, 완료 시 해당 폴더가 자동으로 열립니다.
+빌드 결과는 `src-tauri/target/release/overlayplacer.exe` 하나이며, 설치 과정 없이
+원하는 위치에 두고 그대로 실행하면 됩니다. 완료 시 해당 파일이 탐색기에 표시됩니다.
+
+빌드 없이 받으려면 [릴리스](https://github.com/EYounha/OverlayPlacer/releases)에서
+`overlayplacer.exe`를 내려받으면 됩니다.
 
 ## 실행 · 기타 환경
 
@@ -51,7 +61,7 @@ npm run dev            # 개발 서버 (http://localhost:5173)
 npm run build          # 정적 빌드 → dist/
 npm run tauri:icon     # 앱 아이콘 생성 (최초 1회)
 npm run tauri:dev      # 데스크톱 창에서 실행
-npm run tauri:build    # 설치 파일 빌드
+npm run tauri:build    # 단독 실행 파일 빌드
 ```
 
 웹 빌드 결과물(`dist/`)은 정적 파일이므로 GitHub Pages 등 어디에나 배포할 수 있습니다.

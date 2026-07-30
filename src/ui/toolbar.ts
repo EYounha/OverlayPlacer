@@ -8,6 +8,8 @@ export class Toolbar {
   private toolButtons = new Map<Tool, HTMLElement>();
   private undoBtn: HTMLButtonElement;
   private redoBtn: HTMLButtonElement;
+  private gridBtn: HTMLButtonElement;
+  private snapBtn: HTMLButtonElement;
 
   constructor() {
     const typeSelect = h("select", { class: "tool-type-select", title: "생성할 요소 타입" }) as HTMLSelectElement;
@@ -27,23 +29,46 @@ export class Toolbar {
       class: "tool-btn", title: "다시 실행 (Ctrl+Y)", onclick: () => store.redo()
     }, "↷") as HTMLButtonElement;
 
+    this.gridBtn = h("button", {
+      class: "tool-btn",
+      title: "격자 표시 (Ctrl+')",
+      onclick: () => store.updateSettings({ showGrid: !store.settings.showGrid })
+    }, "▦") as HTMLButtonElement;
+    this.snapBtn = h("button", {
+      class: "tool-btn",
+      title: "요소에 스냅",
+      onclick: () => store.updateSettings({ snapElements: !store.settings.snapElements })
+    }, "⌖") as HTMLButtonElement;
+
     this.root = h(
       "div",
       { class: "toolbar" },
-      this.toolBtn("select", "▲", "선택 (V)"),
-      this.toolBtn("hand", "✋", "손 (H)"),
-      this.toolBtn("draw", "▢", "요소 그리기 (R)"),
+      h(
+        "div",
+        { class: "tool-group" },
+        this.toolBtn("hand", "✋", "손 (Q)"),
+        this.toolBtn("select", "▲", "선택 (W)"),
+        this.toolBtn("draw", "▢", "요소 그리기 (R)")
+      ),
       typeSelect,
       h("div", { class: "toolbar-sep" }),
-      this.undoBtn,
-      this.redoBtn
+      h("div", { class: "tool-group" }, this.undoBtn, this.redoBtn),
+      h("div", { class: "toolbar-sep" }),
+      h("div", { class: "tool-group" }, this.gridBtn, this.snapBtn)
     );
 
     store.on("tool", () => this.syncTools());
     store.on("doc", () => this.syncHistory());
     store.on("selection", () => this.syncHistory());
+    store.on("settings", () => this.syncToggles());
     this.syncTools();
     this.syncHistory();
+    this.syncToggles();
+  }
+
+  private syncToggles(): void {
+    this.gridBtn.classList.toggle("active", store.settings.showGrid);
+    this.snapBtn.classList.toggle("active", store.settings.snapElements);
   }
 
   private toolBtn(tool: Tool, icon: string, title: string): HTMLElement {

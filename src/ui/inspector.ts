@@ -17,7 +17,7 @@ export class InspectorPanel {
     this.root = h(
       "div",
       { class: "panel panel-right" },
-      h("div", { class: "panel-header" }, h("span", {}, "인스펙터")),
+      h("div", { class: "panel-header tab-strip" }, h("div", { class: "tab active" }, "인스펙터")),
       this.body
     );
     store.on("doc", () => this.safeRender());

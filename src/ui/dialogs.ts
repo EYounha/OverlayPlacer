@@ -114,9 +114,12 @@ export function newArtboardDialog(): void {
 
 export function shortcutsDialog(): void {
   const rows: [string, string][] = [
-    ["V", "선택 도구"],
-    ["H · Space 유지", "손 도구 (이동)"],
+    ["W · V", "선택 도구"],
+    ["Q · H · Space 유지", "손 도구 (이동)"],
     ["R", "요소 그리기 도구"],
+    ["F", "선택 프레임"],
+    ["휠", "확대 / 축소 (커서 기준)"],
+    ["휠 클릭 드래그", "화면 이동"],
     ["Ctrl+Z / Ctrl+Y", "실행 취소 / 다시 실행"],
     ["Ctrl+C / X / V", "복사 / 잘라내기 / 붙여넣기"],
     ["Ctrl+D", "복제"],
@@ -127,7 +130,6 @@ export function shortcutsDialog(): void {
     ["Ctrl+Shift+] / Ctrl+Shift+[", "맨 앞 / 맨 뒤로"],
     ["방향키 / Shift+방향키", "1px / 10px 이동"],
     ["Escape", "부모 선택 · 선택 해제"],
-    ["Ctrl+휠", "확대 / 축소"],
     ["Ctrl+0 / Ctrl+1", "화면에 맞추기 / 100%"],
     ["Ctrl+S", "프로젝트 저장"],
     ["Ctrl+E", "AI용 JSON 내보내기"],

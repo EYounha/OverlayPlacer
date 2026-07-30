@@ -14,7 +14,6 @@ import { buildElementContextMenu } from "./sharedMenus";
 import { importText } from "../actions";
 import { getImage, registerImage } from "../state/imageStore";
 
-const RULER = 24;
 const SNAP_SCREEN_PX = 6;
 const MIN_ZOOM = 0.02;
 const MAX_ZOOM = 32;
@@ -81,8 +80,6 @@ export class CanvasView {
   /** 핸들·배지·스냅선·마퀴 등 매번 새로 그리는 레이어 */
   private decorLayer: SVGGElement;
   private labelLayer: HTMLElement;
-  private rulerH: HTMLCanvasElement;
-  private rulerV: HTMLCanvasElement;
   private nodeMap = new Map<string, HTMLElement>();
   private abNodes = new Map<string, ArtboardNode>();
   private drag: DragState | null = null;
@@ -94,8 +91,6 @@ export class CanvasView {
   private lastPointer: Point = { x: 0, y: 0 };
 
   constructor() {
-    this.rulerH = h("canvas", { class: "ruler ruler-h" });
-    this.rulerV = h("canvas", { class: "ruler ruler-v" });
     this.world = h("div", { class: "world" });
     this.overlay = svgEl("svg", { class: "canvas-overlay" });
     this.selLayer = svgEl("g");
@@ -107,25 +102,22 @@ export class CanvasView {
     this.root = h(
       "div",
       { class: "canvas-area" },
-      h("div", { class: "ruler-corner" }),
-      this.rulerH,
-      this.rulerV,
+      h("div", { class: "tab-strip" }, h("div", { class: "tab active" }, "씬")),
       this.viewport
     );
 
     this.bindEvents();
-    store.on("doc", () => { this.syncWorld(); this.renderOverlay(); this.renderRulers(); });
+    store.on("doc", () => { this.syncWorld(); this.renderOverlay(); });
     store.on("transient", () => { this.syncWorld(); this.renderOverlay(); });
-    store.on("view", () => { this.applyViewTransform(); this.renderOverlay(); this.renderRulers(); this.syncLabels(); });
-    store.on("selection", () => { this.renderOverlay(); this.syncLabels(); this.renderRulers(); });
-    store.on("settings", () => { this.syncWorld(); this.renderOverlay(); this.renderRulers(); });
+    store.on("view", () => { this.applyViewTransform(); this.renderOverlay(); this.syncLabels(); });
+    store.on("selection", () => { this.renderOverlay(); this.syncLabels(); });
+    store.on("settings", () => { this.syncWorld(); this.renderOverlay(); });
     store.on("tool", () => this.updateCursor());
 
-    new ResizeObserver(() => { this.resizeCanvases(); }).observe(this.viewport);
+    new ResizeObserver(() => { this.renderOverlay(); this.syncLabels(); }).observe(this.viewport);
   }
 
   mounted(): void {
-    this.resizeCanvases();
     this.syncWorld();
     this.fitToView();
   }
@@ -487,32 +479,6 @@ export class CanvasView {
     return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
   }
 
-  /* ================= 눈금자 ================= */
-
-  private resizeCanvases(): void {
-    const r = this.viewport.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    this.rulerH.width = Math.max(1, r.width * dpr);
-    this.rulerH.height = RULER * dpr;
-    this.rulerV.width = RULER * dpr;
-    this.rulerV.height = Math.max(1, r.height * dpr);
-    this.renderRulers();
-    this.renderOverlay();
-  }
-
-  private renderRulers(): void {
-    if (!store.settings.showRulers) {
-      this.root.classList.add("no-rulers");
-      return;
-    }
-    this.root.classList.remove("no-rulers");
-    const ab = store.activeArtboard();
-    const { zoom, panX, panY } = store.view;
-    const dpr = window.devicePixelRatio || 1;
-    drawRuler(this.rulerH, dpr, zoom, panX + ab.position.x * zoom, true);
-    drawRuler(this.rulerV, dpr, zoom, panY + ab.position.y * zoom, false);
-  }
-
   /* ================= 뷰 제어 ================= */
 
   setZoom(zoom: number, centerScreen?: Point): void {
@@ -592,8 +558,6 @@ export class CanvasView {
       }
     });
 
-    this.rulerH.addEventListener("pointerdown", (e) => this.startGuideFromRuler(e, "h"));
-    this.rulerV.addEventListener("pointerdown", (e) => this.startGuideFromRuler(e, "v"));
 
     // 드래그 앤드 드롭으로 JSON/이미지 열기
     this.viewport.addEventListener("dragover", (e) => e.preventDefault());
@@ -609,17 +573,18 @@ export class CanvasView {
     return this.screenToWorld(this.lastPointer.x, this.lastPointer.y);
   }
 
+  /** 유니티 씬 뷰 방식: 휠 = 커서 기준 확대/축소, Shift+휠 = 가로 이동 */
   private onWheel(e: WheelEvent): void {
     e.preventDefault();
     const r = this.viewport.getBoundingClientRect();
-    if (e.ctrlKey || e.metaKey) {
-      const factor = Math.exp(-e.deltaY * 0.0015);
-      this.setZoom(store.view.zoom * factor, { x: e.clientX - r.left, y: e.clientY - r.top });
-    } else if (e.shiftKey) {
-      store.setView({ panX: store.view.panX - e.deltaY });
-    } else {
-      store.setView({ panX: store.view.panX - e.deltaX, panY: store.view.panY - e.deltaY });
+    if (e.shiftKey) {
+      store.setView({ panX: store.view.panX - (e.deltaY || e.deltaX) });
+      return;
     }
+    // 트랙패드 핀치는 ctrlKey가 실린 휠 이벤트로 들어온다 — 더 미세하게
+    const speed = e.ctrlKey || e.metaKey ? 0.0015 : 0.002;
+    const factor = Math.exp(-e.deltaY * speed);
+    this.setZoom(store.view.zoom * factor, { x: e.clientX - r.left, y: e.clientY - r.top });
   }
 
   private onPointerDown(e: PointerEvent): void {
@@ -893,7 +858,6 @@ export class CanvasView {
         ab.position.x = Math.round(d.initPos.x + (world.x - d.startWorld.x));
         ab.position.y = Math.round(d.initPos.y + (world.y - d.startWorld.y));
         store.notifyTransient();
-        this.renderRulers();
         break;
       }
       case "guide": {
@@ -1326,29 +1290,42 @@ export class CanvasView {
     store.emit("selection");
   }
 
-  /* ================= 가이드 생성 ================= */
+  /* ================= 가이드 · 프레임 ================= */
 
-  private startGuideFromRuler(e: PointerEvent, axis: "v" | "h"): void {
-    if (!store.settings.showGuides) return;
-    e.preventDefault();
+  /**
+   * 화면 중앙 위치에 가이드를 추가한다 (보기 메뉴에서 호출).
+   * 이후 위치는 캔버스에서 드래그로 조정하고, 아트보드 밖으로 끌면 삭제된다.
+   */
+  addGuide(axis: "v" | "h"): void {
     const ab = store.activeArtboard();
+    const r = this.viewport.getBoundingClientRect();
+    const center = this.screenToWorld(r.left + r.width / 2, r.top + r.height / 2);
     store.beginChange();
-    const world = this.screenToWorld(e.clientX, e.clientY);
     const value = axis === "v"
-      ? Math.round(world.x - ab.position.x)
-      : Math.round(world.y - ab.position.y);
-    const arr = axis === "v" ? ab.guides.v : ab.guides.h;
-    arr.push(value);
-    store.emit("doc");
-    this.drag = {
-      mode: "guide",
-      artboardId: ab.id,
-      axis,
-      index: arr.length - 1,
-      isNew: true,
-      mutated: true
-    };
-    this.viewport.setPointerCapture(e.pointerId);
+      ? Math.min(ab.width, Math.max(0, Math.round(center.x - ab.position.x)))
+      : Math.min(ab.height, Math.max(0, Math.round(center.y - ab.position.y)));
+    (axis === "v" ? ab.guides.v : ab.guides.h).push(value);
+    store.commit();
+    if (!store.settings.showGuides) store.updateSettings({ showGuides: true });
+  }
+
+  /** 선택 항목(없으면 활성 아트보드)이 화면에 차도록 뷰를 맞춘다 */
+  frameSelection(): void {
+    const r = this.viewport.getBoundingClientRect();
+    if (r.width < 10) return;
+    const box = this.selectionWorldAABB() ?? artboardWorldRect(store.activeArtboard());
+    const w = Math.max(box.w, 1);
+    const hgt = Math.max(box.h, 1);
+    const margin = 80;
+    const zoom = Math.min(8, Math.max(MIN_ZOOM, Math.min(
+      (r.width - margin * 2) / w,
+      (r.height - margin * 2) / hgt
+    )));
+    store.setView({
+      zoom,
+      panX: (r.width - w * zoom) / 2 - box.x * zoom,
+      panY: (r.height - hgt * zoom) / 2 - box.y * zoom
+    });
   }
 
   /* ================= 상태 통지 ================= */
@@ -1389,70 +1366,6 @@ export class CanvasView {
 }
 
 /* ================= 헬퍼 ================= */
-
-function drawRuler(canvas: HTMLCanvasElement, dpr: number, zoom: number, originScreen: number, horizontal: boolean): void {
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  const length = horizontal ? canvas.width / dpr : canvas.height / dpr;
-  ctx.save();
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, horizontal ? length : RULER, horizontal ? RULER : length);
-  ctx.fillStyle = "#1B1B20";
-  ctx.fillRect(0, 0, horizontal ? length : RULER, horizontal ? RULER : length);
-  ctx.strokeStyle = "#2E2E36";
-  ctx.beginPath();
-  if (horizontal) {
-    ctx.moveTo(0, RULER - 0.5);
-    ctx.lineTo(length, RULER - 0.5);
-  } else {
-    ctx.moveTo(RULER - 0.5, 0);
-    ctx.lineTo(RULER - 0.5, length);
-  }
-  ctx.stroke();
-
-  const steps = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
-  let step = steps[steps.length - 1];
-  for (const s of steps) {
-    if (s * zoom >= 56) { step = s; break; }
-  }
-  const minor = step / 4;
-
-  ctx.fillStyle = "#7A7A85";
-  ctx.strokeStyle = "#41414B";
-  ctx.font = "9px 'Segoe UI', sans-serif";
-  ctx.textBaseline = "top";
-
-  const start = Math.floor((0 - originScreen) / zoom / minor) * minor;
-  const end = (length - originScreen) / zoom;
-  ctx.beginPath();
-  for (let v = start; v <= end; v += minor) {
-    const s = originScreen + v * zoom;
-    const isMajor = Math.abs(v % step) < 1e-9 || Math.abs((v % step) - step) < 1e-9;
-    const tick = isMajor ? 10 : 5;
-    if (horizontal) {
-      ctx.moveTo(s + 0.5, RULER - tick);
-      ctx.lineTo(s + 0.5, RULER);
-    } else {
-      ctx.moveTo(RULER - tick, s + 0.5);
-      ctx.lineTo(RULER, s + 0.5);
-    }
-    if (isMajor) {
-      const label = String(Math.round(v));
-      if (horizontal) {
-        ctx.fillText(label, s + 3, 3);
-      } else {
-        ctx.save();
-        ctx.translate(3, s + 3);
-        ctx.rotate(-Math.PI / 2);
-        ctx.textAlign = "right";
-        ctx.fillText(label, 0, 0);
-        ctx.restore();
-      }
-    }
-  }
-  ctx.stroke();
-  ctx.restore();
-}
 
 function hexWithAlpha(hex: string, alpha: number): string {
   const a = Math.round(alpha * 255).toString(16).padStart(2, "0");

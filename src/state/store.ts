@@ -22,7 +22,6 @@ export interface ViewState {
 
 export interface EditorSettings {
   showGrid: boolean;
-  showRulers: boolean;
   showGuides: boolean;
   snapGrid: boolean;
   snapElements: boolean;
@@ -51,7 +50,6 @@ export class Store {
   drawType: ElementType = "panel";
   settings: EditorSettings = {
     showGrid: false,
-    showRulers: true,
     showGuides: true,
     snapGrid: false,
     snapElements: true,

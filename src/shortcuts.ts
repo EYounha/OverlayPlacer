@@ -98,14 +98,20 @@ export function initShortcuts(canvas: CanvasView): void {
 
     switch (key) {
       case "v":
+      case "w":
         store.setTool("select");
         return;
       case "h":
+      case "q":
         store.setTool("hand");
         return;
       case "r":
       case "b":
         store.setTool("draw");
+        return;
+      case "f":
+        e.preventDefault();
+        canvas.frameSelection();
         return;
       case "delete":
       case "backspace":

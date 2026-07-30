@@ -33,8 +33,9 @@ export class LayersPanel {
       { class: "panel panel-left" },
       h(
         "div",
-        { class: "panel-header" },
-        h("span", {}, "레이어"),
+        { class: "panel-header tab-strip" },
+        h("div", { class: "tab active" }, "계층"),
+        h("div", { class: "tab-spacer" }),
         h("button", {
           class: "icon-btn",
           title: "새 아트보드",

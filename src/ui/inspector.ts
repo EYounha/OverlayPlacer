@@ -4,6 +4,7 @@ import { ANCHORS, ELEMENT_TYPES } from "../types";
 import { findArtboard, findElement } from "../model/doc";
 import { localRectOf, worldInfoOf, writeLocalRect } from "../model/geometry";
 import { align, clearBackgroundImage, distribute, loadBackgroundImage } from "../actions";
+import { hasImage } from "../state/imageStore";
 import { h, clearChildren } from "./dom";
 
 export class InspectorPanel {
@@ -323,11 +324,11 @@ export class InspectorPanel {
           "div",
           { class: "field-row" },
           h("button", { class: "btn btn-small", onclick: () => loadBackgroundImage(ab) }, "참조 이미지 불러오기"),
-          ab.background.image
+          hasImage(ab.background.image)
             ? h("button", { class: "btn btn-small", onclick: () => clearBackgroundImage(ab) }, "제거")
             : null
         ),
-        ab.background.image
+        hasImage(ab.background.image)
           ? this.sliderField("이미지 불투명도", ab.background.imageOpacity, 0, 1, 0.01, (v) =>
               this.mutateArtboard(ab.id, (a) => { a.background.imageOpacity = v; })
             )

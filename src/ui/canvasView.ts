@@ -11,6 +11,7 @@ import { h, svgEl, clearChildren } from "./dom";
 import { showMenu } from "./contextmenu";
 import { buildElementContextMenu } from "./sharedMenus";
 import { importText } from "../actions";
+import { getImage, registerImage } from "../state/imageStore";
 
 const RULER = 24;
 const SNAP_SCREEN_PX = 6;
@@ -146,9 +147,10 @@ export class CanvasView {
     node.style.height = `${ab.height}px`;
     node.style.background = ab.background.color;
 
-    if (ab.background.image) {
+    const bgUrl = getImage(ab.background.image);
+    if (bgUrl) {
       const img = h("div", { class: "artboard-bg" });
-      img.style.backgroundImage = `url(${ab.background.image})`;
+      img.style.backgroundImage = `url(${bgUrl})`;
       img.style.opacity = String(ab.background.imageOpacity);
       node.append(img);
     }
@@ -625,10 +627,7 @@ export class CanvasView {
   }
 
   private beginMoveDrag(world: Point, pointerId: number): void {
-    const ids = store.topLevelSelection().filter((id) => {
-      const f = findElement(store.doc, id);
-      return f && !f.el.locked;
-    });
+    const ids = store.editableSelection();
     if (ids.length === 0) return;
     const items: MoveItem[] = [];
     for (const id of ids) {
@@ -901,7 +900,7 @@ export class CanvasView {
         store.beginChange();
         const target = findArtboard(store.doc, ab.id);
         if (!target) { store.cancelChange(); return; }
-        target.background.image = reader.result as string;
+        target.background.image = registerImage(reader.result as string);
         store.commit();
       };
       reader.readAsDataURL(file);

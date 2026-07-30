@@ -861,6 +861,15 @@ input[type="number"] {
   font-variant-numeric: tabular-nums;
 }
 
+.status-persist {
+  font-size: 11.5px;
+}
+
+.status-persist.failed {
+  color: var(--danger);
+  font-weight: 600;
+}
+
 .status-btn {
   width: 22px;
   height: 20px;

@@ -7,6 +7,8 @@ import { LayersPanel } from "./ui/layers";
 import { InspectorPanel } from "./ui/inspector";
 import { StatusBar } from "./ui/statusbar";
 import { initShortcuts } from "./shortcuts";
+import { store } from "./state/store";
+import { hydrateImages } from "./state/imageStore";
 
 const app = document.getElementById("app")!;
 
@@ -26,3 +28,9 @@ app.append(
 
 initShortcuts(canvas);
 requestAnimationFrame(() => canvas.mounted());
+
+// 배경 참조 이미지는 문서 밖 IndexedDB에 있으므로 복원 후 다시 그린다.
+void hydrateImages().then((count) => {
+  store.pruneStaleImages();
+  if (count > 0) store.emit("doc");
+});

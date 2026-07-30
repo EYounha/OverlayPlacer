@@ -79,7 +79,11 @@ export interface OPElement {
 
 export interface ArtboardBackground {
   color: string;
-  /** dataURL — 프로젝트 저장에만 포함, AI 내보내기 시 제외 */
+  /**
+   * imageStore의 이미지 키. 실제 dataURL은 문서 밖에 보관한다 —
+   * 히스토리 스냅샷과 자동저장이 수 MB 데이터를 복제하지 않도록.
+   * 프로젝트 파일로 저장할 때만 dataURL로 펼쳐진다. AI 내보내기 시 제외.
+   */
   image: string | null;
   imageOpacity: number;
 }

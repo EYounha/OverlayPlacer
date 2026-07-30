@@ -139,6 +139,8 @@ export function initShortcuts(canvas: CanvasView): void {
   });
 
   window.addEventListener("beforeunload", (e) => {
+    // 디바운스 대기 중인 자동저장을 흘려보내 마지막 편집을 잃지 않도록 한다
+    store.flushAutosave();
     if (store.dirty) {
       e.preventDefault();
     }
@@ -146,10 +148,7 @@ export function initShortcuts(canvas: CanvasView): void {
 }
 
 function nudgeSelection(dx: number, dy: number): void {
-  const ids = store.topLevelSelection().filter((id) => {
-    const f = findElement(store.doc, id);
-    return f && !f.el.locked;
-  });
+  const ids = store.editableSelection();
   if (ids.length === 0) return;
   store.beginChange();
   for (const id of ids) {

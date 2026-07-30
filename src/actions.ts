@@ -1,11 +1,37 @@
 import { store } from "./state/store";
-import type { Artboard, OPElement, Rect } from "./types";
+import type { Artboard, OPElement, Point, Rect } from "./types";
 import {
-  cloneDoc, createArtboard, createElement, findArtboard, findElement,
+  ancestorsOf, cloneDoc, createArtboard, createElement, findArtboard, findElement,
   genId, isAncestor, parseProject, reassignIds, serializeForAI, serializeProject
 } from "./model/doc";
-import { localRectOf, worldInfoOf, writeLocalRect } from "./model/geometry";
+import {
+  applyMat, localRectOf, matInvert, matMul, matRotateDeg, matTranslate,
+  parentWorldMatrix, worldInfoOf, writeLocalRect, type Mat
+} from "./model/geometry";
 import { toast } from "./ui/toast";
+import { registerImage } from "./state/imageStore";
+
+/**
+ * 요소의 로컬 좌표계 -> 부모 좌표계 변환.
+ * worldInfoOf와 같은 규칙(원점 이동 후 요소 중심 기준 회전)을 따른다.
+ */
+function groupLocalToParent(rect: Rect, rotation: number): Mat {
+  const base = matTranslate(rect.x, rect.y);
+  if (rotation === 0) return base;
+  return matMul(
+    base,
+    matMul(
+      matTranslate(rect.w / 2, rect.h / 2),
+      matMul(matRotateDeg(rotation), matTranslate(-rect.w / 2, -rect.h / 2))
+    )
+  );
+}
+
+/** -180 ~ 180 범위로 정규화 */
+function normalizeAngle(deg: number): number {
+  const a = ((deg % 360) + 360) % 360;
+  return a > 180 ? a - 360 : a;
+}
 
 /* ---------- 선택 ---------- */
 
@@ -23,7 +49,7 @@ export function selectParent(): void {
 /* ---------- 삭제 · 복제 ---------- */
 
 export function deleteSelection(): void {
-  const ids = store.topLevelSelection();
+  const ids = store.editableSelection();
   if (ids.length === 0) return;
   store.beginChange();
   for (const id of ids) {
@@ -43,6 +69,9 @@ export function duplicateSelection(): void {
     const found = findElement(store.doc, id);
     if (!found) continue;
     const copy = reassignIds(cloneDoc(found.el));
+    // 원본은 그대로 두므로 잠긴 요소도 복제할 수 있다.
+    // 다만 사본은 바로 편집할 수 있어야 하므로 잠금을 푼다.
+    copy.locked = false;
     copy.x += found.el.units.x === "%" ? 2 : 16;
     copy.y += found.el.units.y === "%" ? 2 : 16;
     found.siblings.splice(found.index + 1, 0, copy);
@@ -91,7 +120,7 @@ export function paste(): void {
 /* ---------- 그룹 ---------- */
 
 export function groupSelection(): void {
-  const ids = store.topLevelSelection();
+  const ids = store.editableSelection();
   if (ids.length < 1) return;
   const firsts = ids.map((id) => findElement(store.doc, id)!).filter(Boolean);
   // 동일 부모 하위만 그룹화
@@ -141,7 +170,7 @@ export function groupSelection(): void {
 }
 
 export function ungroupSelection(): void {
-  const ids = store.topLevelSelection();
+  const ids = store.editableSelection();
   if (ids.length === 0) return;
   store.beginChange();
   const newIds: string[] = [];
@@ -158,13 +187,17 @@ export function ungroupSelection(): void {
     const groupRect = localRectOf(el, parentW, parentH);
     const idx = siblings.indexOf(el);
     const children = [...el.children];
+    // 그룹 로컬 -> 부모 좌표계 변환. 그룹이 회전해 있으면 자식 위치도
+    // 그 회전을 따라 옮겨야 하므로 평행이동만으로는 어긋난다.
+    const groupMat = groupLocalToParent(groupRect, el.rotation);
     for (const child of children) {
       const r = localRectOf(child, groupRect.w, groupRect.h);
+      const center = applyMat(groupMat, { x: r.x + r.w / 2, y: r.y + r.h / 2 });
       child.units = { x: "px", y: "px", width: "px", height: "px" };
       child.anchor = "top-left";
-      child.rotation += el.rotation;
+      child.rotation = normalizeAngle(child.rotation + el.rotation);
       writeLocalRect(child, parentW, parentH, {
-        x: groupRect.x + r.x, y: groupRect.y + r.y, w: r.w, h: r.h
+        x: center.x - r.w / 2, y: center.y - r.h / 2, w: r.w, h: r.h
       });
       newIds.push(child.id);
     }
@@ -182,7 +215,7 @@ export function ungroupSelection(): void {
 /* ---------- Z 순서 ---------- */
 
 export function reorder(direction: "front" | "back" | "forward" | "backward"): void {
-  const ids = store.topLevelSelection();
+  const ids = store.editableSelection();
   if (ids.length === 0) return;
   store.beginChange();
   for (const id of ids) {
@@ -208,7 +241,7 @@ export function reorder(direction: "front" | "back" | "forward" | "backward"): v
 export type AlignOp = "left" | "center-h" | "right" | "top" | "center-v" | "bottom";
 
 export function align(op: AlignOp): void {
-  const ids = store.topLevelSelection();
+  const ids = store.editableSelection();
   if (ids.length === 0) return;
   store.beginChange();
   const found = ids.map((id) => findElement(store.doc, id)!).filter(Boolean);
@@ -248,7 +281,7 @@ export function align(op: AlignOp): void {
 }
 
 export function distribute(axis: "h" | "v"): void {
-  const ids = store.topLevelSelection();
+  const ids = store.editableSelection();
   if (ids.length < 3) {
     toast("등간격 분배는 3개 이상 선택 시 사용할 수 있습니다");
     return;
@@ -365,10 +398,22 @@ export function moveInTree(
   const ab = findArtboard(store.doc, target.artboardId);
   if (!ab) { store.cancelChange(); return; }
 
+  // 부모가 바뀌면 좌표계가 바뀐다. 화면상 위치를 유지하려면
+  // 옮기기 전의 월드 기준 중심·크기·누적 회전을 기억해 두어야 한다.
   const moved: OPElement[] = [];
+  const keep = new Map<string, { center: Point; w: number; h: number; rot: number }>();
   for (const id of ids) {
     const found = findElement(store.doc, id);
     if (!found) continue;
+    const info = worldInfoOf(store.doc, id);
+    if (info) {
+      keep.set(id, {
+        center: applyMat(info.matrix, { x: info.w / 2, y: info.h / 2 }),
+        w: info.w,
+        h: info.h,
+        rot: accumulatedRotation(store.doc, id)
+      });
+    }
     found.siblings.splice(found.siblings.indexOf(found.el), 1);
     moved.push(found.el);
   }
@@ -380,8 +425,33 @@ export function moveInTree(
   const idx = Math.max(0, Math.min(target.index, targetList.length));
   targetList.splice(idx, 0, ...moved);
 
-  // 새 부모 좌표계에 맞춰 로컬 좌표 재계산은 단순화: px 기준 유지
+  // 새 부모 좌표계로 환산해 월드 위치를 복원한다
+  const parentRot = target.parentId ? accumulatedRotation(store.doc, target.parentId) : 0;
+  for (const el of moved) {
+    const prev = keep.get(el.id);
+    if (!prev) continue;
+    const parentInfo = target.parentId ? worldInfoOf(store.doc, target.parentId) : null;
+    const parentW = parentInfo ? parentInfo.w : ab.width;
+    const parentH = parentInfo ? parentInfo.h : ab.height;
+    const pm = parentWorldMatrix(store.doc, el.id);
+    const localCenter = applyMat(matInvert(pm), prev.center);
+    el.rotation = normalizeAngle(prev.rot - parentRot);
+    writeLocalRect(el, parentW, parentH, {
+      x: localCenter.x - prev.w / 2,
+      y: localCenter.y - prev.h / 2,
+      w: prev.w,
+      h: prev.h
+    });
+  }
   store.commit();
+}
+
+/** 조상 체인의 회전 합 (모든 변환이 이동+회전이라 단순 합산으로 충분) */
+function accumulatedRotation(doc: typeof store.doc, id: string): number {
+  const chain = [...ancestorsOf(doc, id)];
+  const self = findElement(doc, id)?.el;
+  if (self) chain.push(self);
+  return chain.reduce((sum, el) => sum + el.rotation, 0);
 }
 
 /* ---------- 파일 입출력 ---------- */
@@ -469,7 +539,7 @@ export function loadBackgroundImage(artboard: Artboard): void {
       store.beginChange();
       const ab = findArtboard(store.doc, artboard.id);
       if (!ab) { store.cancelChange(); return; }
-      ab.background.image = reader.result as string;
+      ab.background.image = registerImage(reader.result as string);
       store.commit();
     };
     reader.readAsDataURL(file);
@@ -481,6 +551,8 @@ export function clearBackgroundImage(artboard: Artboard): void {
   store.beginChange();
   const ab = findArtboard(store.doc, artboard.id);
   if (!ab) { store.cancelChange(); return; }
+  // 실제 이미지 데이터는 히스토리에 남지 않으므로 여기서 지우지 않는다.
+  // 되돌리기로 복구할 수 있도록 두고, 자동저장 시점에 참조 없는 것만 정리된다.
   ab.background.image = null;
   store.commit();
 }

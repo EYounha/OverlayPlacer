@@ -2,6 +2,7 @@ import type {
   Artboard, ElementType, OPElement, ProjectDoc
 } from "../types";
 import { ANCHORS, ELEMENT_TYPES, typeInfo } from "../types";
+import { getImage, isImageKey, registerImage } from "../state/imageStore";
 
 let idCounter = 0;
 
@@ -143,9 +144,36 @@ export function reassignIds(el: OPElement): OPElement {
 
 /* ---------- 직렬화 ---------- */
 
-/** 프로젝트 저장용 (전체 보존) */
+/**
+ * 프로젝트 파일 저장용. 문서에는 배경 이미지 키만 있으므로
+ * 이식성을 위해 실제 dataURL로 펼쳐서 내보낸다.
+ */
 export function serializeProject(doc: ProjectDoc): string {
-  return JSON.stringify(doc, null, 2);
+  const out: ProjectDoc = {
+    ...doc,
+    artboards: doc.artboards.map((ab) => ({
+      ...ab,
+      background: { ...ab.background, image: getImage(ab.background.image) }
+    }))
+  };
+  return JSON.stringify(out, null, 2);
+}
+
+/**
+ * 자동저장용. 이미지 키만 담아 용량을 작게 유지한다.
+ * 실제 이미지는 imageStore가 IndexedDB에 따로 보관한다.
+ */
+export function serializeAutosave(doc: ProjectDoc): string {
+  return JSON.stringify(doc);
+}
+
+/** 문서가 참조하는 배경 이미지 키 집합 */
+export function collectImageKeys(doc: ProjectDoc): Set<string> {
+  const keys = new Set<string>();
+  for (const ab of doc.artboards) {
+    if (ab.background.image) keys.add(ab.background.image);
+  }
+  return keys;
 }
 
 /** AI 전달용 — 편집기 전용 필드(배경 이미지, 캔버스 위치, 가이드) 제거 */
@@ -259,7 +287,7 @@ export function parseProject(text: string): ProjectDoc {
       height: num(o.height, 1080, 1),
       background: {
         color: str(bg.color, "#17171C"),
-        image: typeof bg.image === "string" && bg.image.startsWith("data:") ? bg.image : null,
+        image: normImage(bg.image),
         imageOpacity: clamp(num(bg.imageOpacity, 0.5, 0), 0, 1)
       },
       position: { x: px, y: py },
@@ -315,6 +343,18 @@ export function parseProject(text: string): ProjectDoc {
 
   function unit(v: unknown): "px" | "%" {
     return v === "%" ? "%" : "px";
+  }
+
+  /**
+   * 배경 이미지 필드를 키로 정규화한다.
+   * 프로젝트 파일은 dataURL을 담고 있으므로 저장소에 등록해 키로 바꾸고,
+   * 자동저장본은 이미 키이므로 그대로 둔다(실제 데이터는 IndexedDB에서 복원).
+   */
+  function normImage(v: unknown): string | null {
+    if (typeof v !== "string" || v === "") return null;
+    if (v.startsWith("data:")) return registerImage(v);
+    if (isImageKey(v)) return v;
+    return null;
   }
 
   function str(v: unknown, dflt: string): string {

@@ -1,7 +1,18 @@
 import type { OPElement, ProjectDoc, Tool, ElementType } from "../types";
-import { cloneDoc, createProject, findArtboard, findElement, parseProject, serializeProject } from "../model/doc";
+import {
+  cloneDoc, collectImageKeys, createProject, findArtboard, findElement,
+  parseProject, serializeAutosave
+} from "../model/doc";
+import { pruneImages } from "./imageStore";
 
-export type StoreEvent = "doc" | "selection" | "view" | "tool" | "settings" | "transient";
+export type StoreEvent =
+  | "doc" | "selection" | "view" | "tool" | "settings" | "transient" | "persist";
+
+/** 자동저장 상태 — 상태바에 표시된다 */
+export type PersistState =
+  | { kind: "idle" }
+  | { kind: "saved" }
+  | { kind: "failed"; reason: string };
 
 export interface ViewState {
   zoom: number;
@@ -48,11 +59,14 @@ export class Store {
     gridSize: 8
   };
   dirty = false;
+  persistState: PersistState = { kind: "idle" };
 
   private undoStack: HistoryEntry[] = [];
   private redoStack: HistoryEntry[] = [];
   private listeners = new Map<StoreEvent, Set<Listener>>();
   private autosaveTimer: number | null = null;
+  /** cancelChange가 되돌릴 수 있도록 beginChange가 비운 redo 스택을 보관 */
+  private redoBeforeChange: HistoryEntry[] = [];
 
   constructor() {
     this.doc = this.restoreAutosave() ?? createProject();
@@ -87,6 +101,7 @@ export class Store {
   beginChange(): void {
     this.undoStack.push(this.snapshot());
     if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
+    this.redoBeforeChange = this.redoStack;
     this.redoStack = [];
   }
 
@@ -97,9 +112,14 @@ export class Store {
     this.scheduleAutosave();
   }
 
-  /** beginChange 없이 시작한 변경 취소용 보조: 최근 스냅샷 폐기 */
+  /**
+   * 시작한 변경을 되돌린다. beginChange가 비운 redo 스택까지 복구하므로
+   * 취소된 작업 때문에 다시 실행 이력이 사라지지 않는다.
+   */
   cancelChange(): void {
     const entry = this.undoStack.pop();
+    this.redoStack = this.redoBeforeChange;
+    this.redoBeforeChange = [];
     if (entry) {
       this.doc = JSON.parse(entry.json);
       this.selection = entry.selection;
@@ -182,6 +202,17 @@ export class Store {
     });
   }
 
+  /**
+   * 실제로 변경할 수 있는 선택 집합. 잠긴 요소를 제외한다.
+   * 이동·삭제·정렬·순서 변경 등 요소를 바꾸는 동작은 모두 이것을 써야 한다.
+   */
+  editableSelection(): string[] {
+    return this.topLevelSelection().filter((id) => {
+      const found = findElement(this.doc, id);
+      return !!found && !found.el.locked;
+    });
+  }
+
   activeArtboard() {
     return findArtboard(this.doc, this.activeArtboardId) ?? this.doc.artboards[0];
   }
@@ -235,10 +266,40 @@ export class Store {
     if (this.autosaveTimer !== null) window.clearTimeout(this.autosaveTimer);
     this.autosaveTimer = window.setTimeout(() => {
       this.autosaveTimer = null;
-      try {
-        localStorage.setItem(AUTOSAVE_KEY, serializeProject(this.doc));
-      } catch { /* 용량 초과 등 무시 */ }
+      this.writeAutosave();
     }, 400);
+  }
+
+  /** 대기 중인 자동저장을 즉시 기록한다 (창을 닫기 직전 등) */
+  flushAutosave(): void {
+    if (this.autosaveTimer === null) return;
+    window.clearTimeout(this.autosaveTimer);
+    this.autosaveTimer = null;
+    this.writeAutosave();
+  }
+
+  private writeAutosave(): void {
+    // 여기서 미참조 이미지를 정리하면 되돌리기로 복구할 이미지가 사라진다.
+    // 히스토리가 비어 있는 시작 시점(pruneStaleImages)에만 정리한다.
+    try {
+      localStorage.setItem(AUTOSAVE_KEY, serializeAutosave(this.doc));
+      this.setPersistState({ kind: "saved" });
+    } catch (e) {
+      const quota = e instanceof DOMException &&
+        (e.name === "QuotaExceededError" || e.name === "NS_ERROR_DOM_QUOTA_REACHED");
+      this.setPersistState({
+        kind: "failed",
+        reason: quota ? "저장 공간 부족" : "자동 저장 실패"
+      });
+    }
+  }
+
+  private setPersistState(state: PersistState): void {
+    const changed = this.persistState.kind !== state.kind ||
+      (state.kind === "failed" && this.persistState.kind === "failed" &&
+        this.persistState.reason !== state.reason);
+    this.persistState = state;
+    if (changed) this.emit("persist");
   }
 
   private restoreAutosave(): ProjectDoc | null {
@@ -263,6 +324,15 @@ export class Store {
   /** 편집 중 임시 갱신 (드래그 프레임) — 히스토리 없이 통지만 */
   notifyTransient(): void {
     this.emit("transient");
+  }
+
+  /**
+   * 지난 세션에서 남은 미참조 이미지를 정리한다.
+   * 히스토리가 비어 있는 시작 직후에만 안전하다.
+   */
+  pruneStaleImages(): void {
+    if (this.undoStack.length > 0 || this.redoStack.length > 0) return;
+    pruneImages(collectImageKeys(this.doc));
   }
 }
 

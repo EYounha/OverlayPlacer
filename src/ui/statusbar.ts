@@ -6,11 +6,13 @@ export class StatusBar {
   root: HTMLElement;
   private coords: HTMLElement;
   private selInfo: HTMLElement;
+  private persist: HTMLElement;
   private zoomLabel: HTMLElement;
 
   constructor(private canvas: CanvasView) {
     this.coords = h("span", { class: "status-item" }, "0, 0");
     this.selInfo = h("span", { class: "status-item" }, "");
+    this.persist = h("span", { class: "status-persist" }, "");
     this.zoomLabel = h("button", {
       class: "status-zoom",
       title: "100%로",
@@ -23,6 +25,7 @@ export class StatusBar {
       this.coords,
       this.selInfo,
       h("div", { class: "menubar-spacer" }),
+      this.persist,
       h("button", { class: "status-btn", title: "축소", onclick: () => this.canvas.setZoom(store.view.zoom / 1.25) }, "−"),
       this.zoomLabel,
       h("button", { class: "status-btn", title: "확대", onclick: () => this.canvas.setZoom(store.view.zoom * 1.25) }, "+"),
@@ -39,6 +42,21 @@ export class StatusBar {
     });
     store.on("selection", () => this.syncSelection());
     store.on("doc", () => this.syncSelection());
+    store.on("persist", () => this.syncPersist());
+  }
+
+  private syncPersist(): void {
+    const state = store.persistState;
+    if (state.kind === "failed") {
+      this.persist.textContent = `⚠ ${state.reason} · 파일로 저장하세요`;
+      this.persist.className = "status-persist failed";
+      this.persist.title =
+        "브라우저 자동 저장이 실패했습니다. 파일 > 프로젝트 저장으로 직접 저장하세요.";
+    } else {
+      this.persist.textContent = "";
+      this.persist.className = "status-persist";
+      this.persist.title = "";
+    }
   }
 
   private syncSelection(): void {

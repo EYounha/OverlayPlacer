@@ -170,17 +170,37 @@ select {
   min-height: 0;
 }
 
+/*
+ * 패널은 좁은 창에서 캔버스를 짓누르지 않도록 줄어들 수 있게 둔다.
+ * 대신 최소 폭을 지켜 내용이 뭉개지지 않게 하고, 창이 더 좁아지면
+ * 미디어 쿼리로 패널을 접는다.
+ */
 .panel-left {
   width: 240px;
+  min-width: 180px;
   border-right: 1px solid var(--border);
-  flex-shrink: 0;
+  flex: 0 1 240px;
 }
 
 .panel-right {
   width: 264px;
+  min-width: 210px;
   border-left: 1px solid var(--border);
-  flex-shrink: 0;
+  flex: 0 1 264px;
   overflow-y: auto;
+}
+
+/* 좁은 창에서는 레이어 패널을 감춰 캔버스를 확보한다 */
+@media (max-width: 900px) {
+  .panel-left {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .panel-right {
+    display: none;
+  }
 }
 
 .panel-header {
@@ -363,8 +383,9 @@ select {
 /* ===== 캔버스 ===== */
 
 .canvas-area {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 auto;
+  /* 패널이 캔버스를 0폭으로 밀어내지 못하게 한다 */
+  min-width: 320px;
   display: grid;
   grid-template-columns: 24px 1fr;
   grid-template-rows: 24px 1fr;
@@ -451,6 +472,19 @@ select {
   background-position: center;
   background-repeat: no-repeat;
   pointer-events: none;
+}
+
+/* 요소 전용 레이어 — 배경·격자·가이드와 분리해 재조정 비용을 낮춘다 */
+.artboard-content {
+  position: absolute;
+  inset: 0;
+}
+
+.artboard-guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
 }
 
 .artboard-grid {

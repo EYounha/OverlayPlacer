@@ -19,6 +19,7 @@ export class LayersPanel {
   root: HTMLElement;
   private list: HTMLElement;
   private collapsed = new Set<string>();
+  private lastSignature = "";
   private dragIds: string[] | null = null;
   private dragStart: { x: number; y: number } | null = null;
   private dragging = false;
@@ -43,13 +44,57 @@ export class LayersPanel {
       this.list
     );
     store.on("doc", () => this.render());
-    store.on("selection", () => this.render());
+    // 선택만 바뀔 때 목록을 다시 만들면 스크롤 위치가 맨 위로 튀고
+    // 이름 변경 중인 입력이 사라진다. 강조 표시만 갱신한다.
+    store.on("selection", () => this.syncHighlight());
     window.addEventListener("pointermove", (e) => this.onPointerMove(e));
     window.addEventListener("pointerup", () => this.onPointerUp());
     this.render();
   }
 
+  /** 선택 강조와 활성 아트보드 표시만 갱신 (DOM 구조 유지) */
+  private syncHighlight(): void {
+    const selected = new Set(store.selection);
+    for (const row of this.list.children) {
+      const el = row as HTMLElement;
+      const elId = el.dataset.elId;
+      if (elId) {
+        el.classList.toggle("selected", selected.has(elId));
+      } else if (el.dataset.abId) {
+        el.classList.toggle("active", el.dataset.abId === store.activeArtboardId);
+      }
+    }
+  }
+
+  /**
+   * 목록 구조가 실제로 바뀌었는지 판단하는 지문.
+   * 요소를 옮기기만 하는 편집에서는 이 값이 그대로이므로
+   * 수백 개 행을 다시 만들지 않아도 된다.
+   */
+  private structureSignature(): string {
+    const parts: string[] = [];
+    const walk = (els: OPElement[], depth: number) => {
+      for (let i = els.length - 1; i >= 0; i--) {
+        const el = els[i];
+        parts.push(`${el.id}|${el.name}|${el.type}|${el.color}|${el.visible ? 1 : 0}|${el.locked ? 1 : 0}|${el.children.length}|${depth}`);
+        if (el.children.length > 0 && !this.collapsed.has(el.id)) walk(el.children, depth + 1);
+      }
+    };
+    for (const ab of store.doc.artboards) {
+      parts.push(`AB|${ab.id}|${ab.name}|${ab.width}x${ab.height}|${ab.children.length}`);
+      if (!this.collapsed.has(ab.id)) walk(ab.children, 1);
+    }
+    return parts.join("\n");
+  }
+
   private render(): void {
+    const signature = this.structureSignature();
+    if (signature === this.lastSignature && this.list.childElementCount > 0) {
+      this.syncHighlight();
+      return;
+    }
+    this.lastSignature = signature;
+    const scrollTop = this.list.scrollTop;
     clearChildren(this.list);
     for (const ab of store.doc.artboards) {
       this.list.append(this.artboardRow(ab));
@@ -57,6 +102,8 @@ export class LayersPanel {
         this.renderChildren(ab.children, ab, null, 1);
       }
     }
+    // 구조가 바뀌어 다시 만들 때도 보고 있던 위치를 유지한다
+    this.list.scrollTop = scrollTop;
   }
 
   private renderChildren(els: OPElement[], ab: Artboard, parentId: string | null, depth: number): void {
@@ -188,6 +235,7 @@ export class LayersPanel {
   private toggleCollapse(id: string): void {
     if (this.collapsed.has(id)) this.collapsed.delete(id);
     else this.collapsed.add(id);
+    this.lastSignature = "";
     this.render();
   }
 

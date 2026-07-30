@@ -129,6 +129,49 @@ export function worldInfoOf(doc: ProjectDoc, elementId: string): WorldInfo | nul
   return { matrix: m, w: pw, h: ph, parentW, parentH, localRect };
 }
 
+export interface WorldEntry extends WorldInfo {
+  el: OPElement;
+  parent: OPElement | null;
+  artboard: Artboard;
+}
+
+/**
+ * 문서 전체의 월드 변환을 한 번의 순회로 계산한다.
+ *
+ * worldInfoOf는 호출마다 조상 체인을 다시 걷기 때문에 요소마다 부르면
+ * O(n^2)이 된다. 오버레이 렌더링·히트테스트·마퀴·스냅처럼 모든 요소를
+ * 훑는 경로에서는 반드시 이 맵을 써야 한다.
+ */
+export function buildWorldMap(doc: ProjectDoc): Map<string, WorldEntry> {
+  const map = new Map<string, WorldEntry>();
+  for (const ab of doc.artboards) {
+    walk(ab.children, matTranslate(ab.position.x, ab.position.y), ab.width, ab.height, null, ab);
+  }
+  return map;
+
+  function walk(
+    els: OPElement[], parentMat: Mat, pw: number, ph: number,
+    parent: OPElement | null, artboard: Artboard
+  ): void {
+    for (const el of els) {
+      const rect = localRectOf(el, pw, ph);
+      let m = matMul(parentMat, matTranslate(rect.x, rect.y));
+      if (el.rotation !== 0) {
+        m = matMul(m, matMul(
+          matTranslate(rect.w / 2, rect.h / 2),
+          matMul(matRotateDeg(el.rotation), matTranslate(-rect.w / 2, -rect.h / 2))
+        ));
+      }
+      map.set(el.id, {
+        matrix: m, w: rect.w, h: rect.h,
+        parentW: pw, parentH: ph, localRect: rect,
+        el, parent, artboard
+      });
+      if (el.children.length > 0) walk(el.children, m, rect.w, rect.h, el, artboard);
+    }
+  }
+}
+
 /** 부모의 월드 변환 (요소 로컬 → 월드 이전 단계) */
 export function parentWorldMatrix(doc: ProjectDoc, elementId: string): Mat {
   const found = findElement(doc, elementId);

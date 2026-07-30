@@ -4,7 +4,8 @@ import { typeInfo } from "../types";
 import { findArtboard, findElement, createElement, genId } from "../model/doc";
 import {
   applyMat, artboardWorldRect, localRectOf, matInvert, parentWorldMatrix,
-  pointInElement, rectsIntersect, worldAABB, worldCorners, worldInfoOf, writeLocalRect,
+  buildWorldMap, pointInElement, rectsIntersect, worldAABB, worldCorners,
+  worldInfoOf, writeLocalRect, type WorldEntry,
   type Mat, type WorldInfo
 } from "../model/geometry";
 import { h, svgEl, clearChildren } from "./dom";
@@ -19,6 +20,20 @@ const MIN_ZOOM = 0.02;
 const MAX_ZOOM = 32;
 
 type Handle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+interface ArtboardNode {
+  root: HTMLElement;
+  bg: HTMLElement;
+  grid: HTMLElement;
+  content: HTMLElement;
+  guides: HTMLElement;
+}
+
+/** 값이 실제로 달라질 때만 쓴다 — 불필요한 스타일 재계산을 막는다 */
+function setStyle(node: HTMLElement, prop: string, value: string): void {
+  const style = node.style as unknown as Record<string, string>;
+  if (style[prop] !== value) style[prop] = value;
+}
 
 interface MoveItem {
   id: string;
@@ -61,15 +76,21 @@ export class CanvasView {
   private viewport: HTMLElement;
   private world: HTMLElement;
   private overlay: SVGSVGElement;
+  /** 선택 외곽선 전용 레이어 (노드 재사용) */
+  private selLayer: SVGGElement;
+  /** 핸들·배지·스냅선·마퀴 등 매번 새로 그리는 레이어 */
+  private decorLayer: SVGGElement;
   private labelLayer: HTMLElement;
   private rulerH: HTMLCanvasElement;
   private rulerV: HTMLCanvasElement;
   private nodeMap = new Map<string, HTMLElement>();
-  private abNodes = new Map<string, HTMLElement>();
+  private abNodes = new Map<string, ArtboardNode>();
   private drag: DragState | null = null;
   private hoverId: string | null = null;
   private spaceHeld = false;
   private snapLines: SnapLine[] = [];
+  /** 드래그 시작 시 한 번 모으는 스냅 대상 좌표 */
+  private snapTargets: { xs: number[]; ys: number[] } | null = null;
   private lastPointer: Point = { x: 0, y: 0 };
 
   constructor() {
@@ -77,6 +98,9 @@ export class CanvasView {
     this.rulerV = h("canvas", { class: "ruler ruler-v" });
     this.world = h("div", { class: "world" });
     this.overlay = svgEl("svg", { class: "canvas-overlay" });
+    this.selLayer = svgEl("g");
+    this.decorLayer = svgEl("g");
+    this.overlay.append(this.selLayer, this.decorLayer);
     this.labelLayer = h("div", { class: "ab-label-layer" });
     this.viewport = h("div", { class: "viewport", tabindex: "-1" }, this.world, this.labelLayer);
     this.viewport.append(this.overlay);
@@ -90,11 +114,11 @@ export class CanvasView {
     );
 
     this.bindEvents();
-    store.on("doc", () => { this.renderWorld(); this.renderOverlay(); this.renderRulers(); });
-    store.on("transient", () => { this.refreshStyles(); this.renderOverlay(); });
-    store.on("view", () => { this.applyViewTransform(); this.renderOverlay(); this.renderRulers(); this.renderLabels(); });
-    store.on("selection", () => { this.renderOverlay(); this.renderLabels(); this.renderRulers(); });
-    store.on("settings", () => { this.renderWorld(); this.renderOverlay(); this.renderRulers(); });
+    store.on("doc", () => { this.syncWorld(); this.renderOverlay(); this.renderRulers(); });
+    store.on("transient", () => { this.syncWorld(); this.renderOverlay(); });
+    store.on("view", () => { this.applyViewTransform(); this.renderOverlay(); this.renderRulers(); this.syncLabels(); });
+    store.on("selection", () => { this.renderOverlay(); this.syncLabels(); this.renderRulers(); });
+    store.on("settings", () => { this.syncWorld(); this.renderOverlay(); this.renderRulers(); });
     store.on("tool", () => this.updateCursor());
 
     new ResizeObserver(() => { this.resizeCanvases(); }).observe(this.viewport);
@@ -102,7 +126,7 @@ export class CanvasView {
 
   mounted(): void {
     this.resizeCanvases();
-    this.renderWorld();
+    this.syncWorld();
     this.fitToView();
   }
 
@@ -126,164 +150,224 @@ export class CanvasView {
     this.world.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   }
 
-  private renderWorld(): void {
-    clearChildren(this.world);
-    this.nodeMap.clear();
-    this.abNodes.clear();
+  /**
+   * 문서를 DOM에 반영한다.
+   *
+   * 매번 허물고 다시 만들면 편집마다 화면이 번쩍이고 요소 수에 비례해
+   * 비용이 커진다. 여기서는 id로 노드를 재사용하고 바뀐 것만 손댄다.
+   */
+  private syncWorld(): void {
+    const seenAb = new Set<string>();
+    let cursor: Element | null = this.world.firstElementChild;
     for (const ab of store.doc.artboards) {
-      const node = this.buildArtboardNode(ab);
-      this.abNodes.set(ab.id, node);
-      this.world.append(node);
+      seenAb.add(ab.id);
+      let parts = this.abNodes.get(ab.id);
+      if (!parts) {
+        parts = this.createArtboardNode(ab.id);
+        this.abNodes.set(ab.id, parts);
+      }
+      if (parts.root !== cursor) {
+        this.world.insertBefore(parts.root, cursor);
+      } else {
+        cursor = cursor.nextElementSibling;
+      }
+      this.syncArtboard(ab, parts);
+    }
+    for (const [id, parts] of [...this.abNodes]) {
+      if (!seenAb.has(id)) {
+        parts.root.remove();
+        this.abNodes.delete(id);
+      }
     }
     this.applyViewTransform();
-    this.renderLabels();
+    this.syncLabels();
   }
 
-  private buildArtboardNode(ab: Artboard): HTMLElement {
-    const node = h("div", { class: "artboard", dataset: { id: ab.id } });
-    node.style.left = `${ab.position.x}px`;
-    node.style.top = `${ab.position.y}px`;
-    node.style.width = `${ab.width}px`;
-    node.style.height = `${ab.height}px`;
-    node.style.background = ab.background.color;
+  private createArtboardNode(id: string): ArtboardNode {
+    const bg = h("div", { class: "artboard-bg" });
+    const grid = h("div", { class: "artboard-grid" });
+    const content = h("div", { class: "artboard-content" });
+    const guides = h("div", { class: "artboard-guides" });
+    const root = h("div", { class: "artboard", dataset: { id } }, bg, grid, content, guides);
+    return { root, bg, grid, content, guides };
+  }
+
+  private syncArtboard(ab: Artboard, parts: ArtboardNode): void {
+    const { root, bg, grid, content, guides } = parts;
+    setStyle(root, "left", `${ab.position.x}px`);
+    setStyle(root, "top", `${ab.position.y}px`);
+    setStyle(root, "width", `${ab.width}px`);
+    setStyle(root, "height", `${ab.height}px`);
+    setStyle(root, "background", ab.background.color);
 
     const bgUrl = getImage(ab.background.image);
+    setStyle(bg, "display", bgUrl ? "" : "none");
     if (bgUrl) {
-      const img = h("div", { class: "artboard-bg" });
-      img.style.backgroundImage = `url(${bgUrl})`;
-      img.style.opacity = String(ab.background.imageOpacity);
-      node.append(img);
+      setStyle(bg, "backgroundImage", `url(${bgUrl})`);
+      setStyle(bg, "opacity", String(ab.background.imageOpacity));
     }
 
+    setStyle(grid, "display", store.settings.showGrid ? "" : "none");
     if (store.settings.showGrid) {
-      const g = store.settings.gridSize;
-      const grid = h("div", { class: "artboard-grid" });
-      grid.style.backgroundSize = `${g}px ${g}px`;
-      node.append(grid);
+      setStyle(grid, "backgroundSize", `${store.settings.gridSize}px ${store.settings.gridSize}px`);
     }
 
-    for (const el of ab.children) {
-      const child = this.buildElementNode(el, ab.width, ab.height);
-      if (child) node.append(child);
-    }
-
-    if (store.settings.showGuides) {
-      for (let i = 0; i < ab.guides.v.length; i++) {
-        const gl = h("div", { class: "guide guide-v" });
-        gl.style.left = `${ab.guides.v[i]}px`;
-        node.append(gl);
-      }
-      for (let i = 0; i < ab.guides.h.length; i++) {
-        const gl = h("div", { class: "guide guide-h" });
-        gl.style.top = `${ab.guides.h[i]}px`;
-        node.append(gl);
-      }
-    }
-    return node;
+    this.syncGuides(ab, guides);
+    this.syncElements(content, ab.children, ab.width, ab.height, content.firstElementChild);
   }
 
-  private buildElementNode(el: OPElement, pw: number, ph: number): HTMLElement | null {
-    const node = h("div", { class: "op-el", dataset: { id: el.id } });
-    this.applyElementStyle(node, el, pw, ph);
-    const info = typeInfo(el.type);
-    node.append(h("div", { class: "el-label" }, el.name || info.label));
+  private syncGuides(ab: Artboard, layer: HTMLElement): void {
+    const show = store.settings.showGuides;
+    const want = show ? ab.guides.v.length + ab.guides.h.length : 0;
+    while (layer.childElementCount > want) layer.lastElementChild!.remove();
+    while (layer.childElementCount < want) layer.append(h("div", { class: "guide" }));
+    if (!show) return;
+    let i = 0;
+    for (const v of ab.guides.v) {
+      const node = layer.children[i++] as HTMLElement;
+      node.className = "guide guide-v";
+      node.style.top = "";
+      setStyle(node, "left", `${v}px`);
+    }
+    for (const gh of ab.guides.h) {
+      const node = layer.children[i++] as HTMLElement;
+      node.className = "guide guide-h";
+      node.style.left = "";
+      setStyle(node, "top", `${gh}px`);
+    }
+  }
+
+  /**
+   * 컨테이너의 자식 노드를 문서 순서에 맞게 재사용·재배치한다.
+   *
+   * 요소 노드는 첫 자식이 항상 .el-label이어야 하므로, 자식 요소를 넣을 때는
+   * 라벨 다음부터 시작한다(from). 그러지 않으면 라벨이 밀려나 갱신되지 않고
+   * 뒤처리 루프에 지워진다.
+   */
+  private syncElements(
+    container: HTMLElement, els: OPElement[], pw: number, ph: number, from: Element | null
+  ): void {
+    let cursor: Element | null = from;
+    for (const el of els) {
+      let node = this.nodeMap.get(el.id);
+      if (!node) {
+        node = h("div", { class: "op-el", dataset: { id: el.id } },
+          h("div", { class: "el-label" }));
+        this.nodeMap.set(el.id, node);
+      }
+      // 재귀 중 커서가 가리키던 노드가 다른 부모로 옮겨졌을 수 있다
+      if (cursor && cursor.parentElement !== container) cursor = null;
+      if (node !== cursor) {
+        container.insertBefore(node, cursor);
+      } else {
+        cursor = cursor.nextElementSibling;
+      }
+      const r = this.applyElementStyle(node, el, pw, ph);
+      // 첫 자식은 라벨이므로 그 다음부터 자식 요소를 배치한다
+      this.syncElements(node, el.children, r.w, r.h, node.firstElementChild?.nextElementSibling ?? null);
+    }
+    // 문서에서 사라진 노드만 걷어낸다.
+    // 커서를 따라가며 지우면, 재귀 중 다른 부모로 옮겨진 노드까지
+    // 함께 지워진다(레이어 패널로 부모를 바꿀 때 요소가 사라지던 원인).
+    const wanted = new Set(els.map((e) => e.id));
+    for (const child of [...container.children]) {
+      const id = (child as HTMLElement).dataset?.id;
+      if (!id) continue; // .el-label 등 요소가 아닌 노드
+      if (!wanted.has(id)) {
+        this.forgetSubtree(id, child as HTMLElement);
+        child.remove();
+      }
+    }
+  }
+
+  private forgetSubtree(id: string, node: HTMLElement): void {
+    this.nodeMap.delete(id);
+    for (const child of [...node.children]) {
+      const cid = (child as HTMLElement).dataset?.id;
+      if (cid) this.forgetSubtree(cid, child as HTMLElement);
+    }
+  }
+
+  private applyElementStyle(node: HTMLElement, el: OPElement, pw: number, ph: number): Rect {
     const r = localRectOf(el, pw, ph);
-    for (const child of el.children) {
-      const c = this.buildElementNode(child, r.w, r.h);
-      if (c) node.append(c);
+    setStyle(node, "left", `${r.x}px`);
+    setStyle(node, "top", `${r.y}px`);
+    setStyle(node, "width", `${r.w}px`);
+    setStyle(node, "height", `${r.h}px`);
+    setStyle(node, "transform", el.rotation ? `rotate(${el.rotation}deg)` : "");
+    setStyle(node, "opacity", String(el.opacity));
+    setStyle(node, "display", el.visible ? "" : "none");
+    setStyle(node, "borderColor", el.color);
+    setStyle(node, "background", hexWithAlpha(el.color, 0.14));
+    const label = node.firstElementChild as HTMLElement | null;
+    if (label && label.classList.contains("el-label")) {
+      const text = el.name || typeInfo(el.type).label;
+      if (label.textContent !== text) label.textContent = text;
+      setStyle(label, "color", el.color);
     }
-    this.nodeMap.set(el.id, node);
-    return node;
+    return r;
   }
 
-  private applyElementStyle(node: HTMLElement, el: OPElement, pw: number, ph: number): void {
-    const r = localRectOf(el, pw, ph);
-    node.style.left = `${r.x}px`;
-    node.style.top = `${r.y}px`;
-    node.style.width = `${r.w}px`;
-    node.style.height = `${r.h}px`;
-    node.style.transform = el.rotation ? `rotate(${el.rotation}deg)` : "";
-    node.style.opacity = String(el.opacity);
-    node.style.display = el.visible ? "" : "none";
-    node.style.borderColor = el.color;
-    node.style.background = hexWithAlpha(el.color, 0.14);
-    const label = node.querySelector(":scope > .el-label") as HTMLElement | null;
-    if (label) {
-      label.textContent = el.name || typeInfo(el.type).label;
-      label.style.color = el.color;
-    }
-  }
-
-  /** 드래그 프레임: DOM 구조 유지, 스타일만 갱신 */
-  private refreshStyles(): void {
-    for (const ab of store.doc.artboards) {
-      const abNode = this.abNodes.get(ab.id);
-      if (abNode) {
-        abNode.style.left = `${ab.position.x}px`;
-        abNode.style.top = `${ab.position.y}px`;
-      }
-      const walk = (els: OPElement[], pw: number, ph: number) => {
-        for (const el of els) {
-          const node = this.nodeMap.get(el.id);
-          if (node) this.applyElementStyle(node, el, pw, ph);
-          const r = localRectOf(el, pw, ph);
-          walk(el.children, r.w, r.h);
-        }
-      };
-      walk(ab.children, ab.width, ab.height);
-    }
-    this.renderLabels();
-  }
-
-  private renderLabels(): void {
-    clearChildren(this.labelLayer);
-    for (const ab of store.doc.artboards) {
-      const s = this.worldToScreen({ x: ab.position.x, y: ab.position.y });
-      const label = h(
-        "div",
-        {
-          class: `ab-label${ab.id === store.activeArtboardId ? " active" : ""}`,
-          dataset: { id: ab.id }
-        },
-        `${ab.name}`,
-        h("span", { class: "ab-label-size" }, ` ${ab.width}×${ab.height}`)
-      );
-      label.style.left = `${s.x}px`;
-      label.style.top = `${s.y - 22}px`;
-      label.addEventListener("pointerdown", (e) => this.onArtboardLabelDown(e, ab.id));
+  private syncLabels(): void {
+    const want = store.doc.artboards.length;
+    while (this.labelLayer.childElementCount > want) this.labelLayer.lastElementChild!.remove();
+    while (this.labelLayer.childElementCount < want) {
+      const label = h("div", { class: "ab-label" }, h("span", { class: "ab-label-name" }),
+        h("span", { class: "ab-label-size" }));
+      label.addEventListener("pointerdown", (e) => {
+        const id = label.dataset.id;
+        if (id) this.onArtboardLabelDown(e, id);
+      });
       this.labelLayer.append(label);
     }
+    store.doc.artboards.forEach((ab, i) => {
+      const label = this.labelLayer.children[i] as HTMLElement;
+      label.dataset.id = ab.id;
+      const cls = `ab-label${ab.id === store.activeArtboardId ? " active" : ""}`;
+      if (label.className !== cls) label.className = cls;
+      const nameEl = label.firstElementChild as HTMLElement;
+      const sizeEl = label.lastElementChild as HTMLElement;
+      if (nameEl.textContent !== ab.name) nameEl.textContent = ab.name;
+      const size = ` ${ab.width}×${ab.height}`;
+      if (sizeEl.textContent !== size) sizeEl.textContent = size;
+      const s = this.worldToScreen({ x: ab.position.x, y: ab.position.y });
+      setStyle(label, "left", `${s.x}px`);
+      setStyle(label, "top", `${s.y - 22}px`);
+    });
   }
 
   /* ================= 오버레이 ================= */
 
   private renderOverlay(): void {
-    clearChildren(this.overlay);
+    clearChildren(this.decorLayer);
     const frag = document.createDocumentFragment();
+    // 선택이 클 때 요소마다 조상 체인을 다시 걷지 않도록 한 번만 계산한다
+    const world = buildWorldMap(store.doc);
 
     // 호버 표시
     if (this.hoverId && !store.selection.includes(this.hoverId) && !this.drag) {
-      const info = worldInfoOf(store.doc, this.hoverId);
+      const info = world.get(this.hoverId);
       if (info) {
         frag.append(this.outlinePolygon(info, "op-hover-outline"));
       }
     }
 
-    // 선택 표시
+    // 선택 외곽선은 개수가 많아질 수 있으므로 노드를 재사용한다.
+    // 매 프레임 수백 개를 새로 만들면 방향키 한 번에도 화면이 멈춘다.
+    const selInfos = store.selection
+      .map((id) => world.get(id))
+      .filter((i): i is WorldEntry => !!i);
+    this.syncSelectionOutlines(selInfos);
+
     const single = store.selection.length === 1;
-    for (const id of store.selection) {
-      const info = worldInfoOf(store.doc, id);
-      if (!info) continue;
-      frag.append(this.outlinePolygon(info, "op-sel-outline"));
-      if (single && store.tool === "select") {
-        this.appendHandles(frag, info);
-        this.appendSizeBadge(frag, info);
-      }
+    if (single && store.tool === "select" && selInfos.length === 1) {
+      this.appendHandles(frag, selInfos[0]);
+      this.appendSizeBadge(frag, selInfos[0]);
     }
 
     // 다중 선택 묶음 외곽
     if (store.selection.length > 1) {
-      const aabb = this.selectionWorldAABB();
+      const aabb = this.selectionWorldAABB(world);
       if (aabb) {
         const a = this.worldToScreen({ x: aabb.x, y: aabb.y });
         const b = this.worldToScreen({ x: aabb.x + aabb.w, y: aabb.y + aabb.h });
@@ -317,7 +401,24 @@ export class CanvasView {
       }));
     }
 
-    this.overlay.append(frag);
+    this.decorLayer.append(frag);
+  }
+
+  /** 선택 외곽선 폴리곤을 풀에서 재사용한다 */
+  private syncSelectionOutlines(infos: WorldInfo[]): void {
+    const layer = this.selLayer;
+    while (layer.childElementCount > infos.length) layer.lastElementChild!.remove();
+    while (layer.childElementCount < infos.length) {
+      layer.append(svgEl("polygon", { class: "op-sel-outline" }));
+    }
+    infos.forEach((info, i) => {
+      const poly = layer.children[i] as SVGPolygonElement;
+      const pts = worldCorners(info)
+        .map((p) => this.worldToScreen(p))
+        .map((p) => `${p.x},${p.y}`)
+        .join(" ");
+      if (poly.getAttribute("points") !== pts) poly.setAttribute("points", pts);
+    });
   }
 
   private outlinePolygon(info: WorldInfo, cls: string): SVGPolygonElement {
@@ -370,10 +471,11 @@ export class CanvasView {
     return applyMat(info.matrix, { x: info.w / 2, y: -d });
   }
 
-  private selectionWorldAABB(): Rect | null {
+  private selectionWorldAABB(world?: Map<string, WorldEntry>): Rect | null {
+    const map = world ?? buildWorldMap(store.doc);
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const id of store.selection) {
-      const info = worldInfoOf(store.doc, id);
+      const info = map.get(id);
       if (!info) continue;
       const bb = worldAABB(info);
       minX = Math.min(minX, bb.x);
@@ -583,6 +685,7 @@ export class CanvasView {
               artboardId: found.artboard.id,
               mutated: false
             };
+            this.prepareSnapTargets(found.artboard.id, new Set([found.el.id]));
             this.viewport.setPointerCapture(e.pointerId);
             return;
           }
@@ -654,6 +757,7 @@ export class CanvasView {
       artboardId: store.activeArtboardId,
       mutated: false
     };
+    this.prepareSnapTargets(store.activeArtboardId, new Set(ids));
     this.viewport.setPointerCapture(pointerId);
   }
 
@@ -811,6 +915,7 @@ export class CanvasView {
     if (!d) return;
     this.drag = null;
     this.snapLines = [];
+    this.snapTargets = null;
     this.updateCursor();
 
     switch (d.mode) {
@@ -923,24 +1028,29 @@ export class CanvasView {
   }
 
   private hitElement(world: Point): { id: string; artboardId: string } | null {
+    // 요소마다 조상 체인을 다시 걷지 않도록 한 번만 계산한다.
+    // 호버는 pointermove마다 돌기 때문에 여기가 가장 뜨거운 경로다.
+    const map = buildWorldMap(store.doc);
     for (let i = store.doc.artboards.length - 1; i >= 0; i--) {
       const ab = store.doc.artboards[i];
-      const hit = this.hitIn(ab.children, world);
+      const hit = this.hitIn(ab.children, world, map);
       if (hit) return { id: hit, artboardId: ab.id };
     }
     return null;
   }
 
-  private hitIn(els: OPElement[], world: Point): string | null {
+  private hitIn(
+    els: OPElement[], world: Point, map: Map<string, WorldEntry>
+  ): string | null {
     for (let i = els.length - 1; i >= 0; i--) {
       const el = els[i];
       if (!el.visible || el.locked) {
         // 잠긴 요소는 통과하되 자식도 제외
         continue;
       }
-      const deep = this.hitIn(el.children, world);
+      const deep = this.hitIn(el.children, world, map);
       if (deep) return deep;
-      const info = worldInfoOf(store.doc, el.id);
+      const info = map.get(el.id);
       if (info && pointInElement(info, world)) return el.id;
     }
     return null;
@@ -967,6 +1077,35 @@ export class CanvasView {
 
   /* ================= 스냅 ================= */
 
+  /**
+   * 드래그 시작 시 스냅 대상 좌표를 모아 둔다.
+   * 아트보드 경계·중앙, 가이드, 그리고 움직이지 않는 다른 요소의 경계·중앙.
+   */
+  private prepareSnapTargets(artboardId: string, excluded: Set<string>): void {
+    const ab = findArtboard(store.doc, artboardId);
+    if (!ab) { this.snapTargets = { xs: [], ys: [] }; return; }
+    const abr = artboardWorldRect(ab);
+    const xs = [abr.x, abr.x + abr.w / 2, abr.x + abr.w];
+    const ys = [abr.y, abr.y + abr.h / 2, abr.y + abr.h];
+
+    if (store.settings.snapGuides && store.settings.showGuides) {
+      for (const v of ab.guides.v) xs.push(abr.x + v);
+      for (const gh of ab.guides.h) ys.push(abr.y + gh);
+    }
+    if (store.settings.snapElements) {
+      const map = buildWorldMap(store.doc);
+      for (const el of ab.children) {
+        if (excluded.has(el.id) || !el.visible) continue;
+        const info = map.get(el.id);
+        if (!info) continue;
+        const bb = worldAABB(info);
+        xs.push(bb.x, bb.x + bb.w / 2, bb.x + bb.w);
+        ys.push(bb.y, bb.y + bb.h / 2, bb.y + bb.h);
+      }
+    }
+    this.snapTargets = { xs, ys };
+  }
+
   private applyMoveSnap(
     d: Extract<DragState, { mode: "move" }>, dx: number, dy: number, bypass: boolean
   ): { dx: number; dy: number } {
@@ -987,28 +1126,12 @@ export class CanvasView {
     const movingXs = [moving.x, moving.x + moving.w / 2, moving.x + moving.w];
     const movingYs = [moving.y, moving.y + moving.h / 2, moving.y + moving.h];
 
-    const targetXs: number[] = [];
-    const targetYs: number[] = [];
-    // 아트보드 경계·중앙
-    targetXs.push(abr.x, abr.x + abr.w / 2, abr.x + abr.w);
-    targetYs.push(abr.y, abr.y + abr.h / 2, abr.y + abr.h);
-    // 가이드
-    if (snapGuides && store.settings.showGuides) {
-      for (const v of ab.guides.v) targetXs.push(abr.x + v);
-      for (const gh of ab.guides.h) targetYs.push(abr.y + gh);
-    }
-    // 다른 요소
-    if (snapElements) {
-      const excluded = new Set(d.items.map((i) => i.id));
-      for (const el of ab.children) {
-        if (excluded.has(el.id) || !el.visible) continue;
-        const info = worldInfoOf(store.doc, el.id);
-        if (!info) continue;
-        const bb = worldAABB(info);
-        targetXs.push(bb.x, bb.x + bb.w / 2, bb.x + bb.w);
-        targetYs.push(bb.y, bb.y + bb.h / 2, bb.y + bb.h);
-      }
-    }
+    // 스냅 대상은 드래그 중 움직이지 않으므로 시작할 때 한 번만 모은다.
+    // 프레임마다 다시 모으면 요소 수의 제곱으로 비용이 늘어난다.
+    const targets = this.snapTargets ?? { xs: [], ys: [] };
+    const targetXs = targets.xs;
+    const targetYs = targets.ys;
+    void snapElements; void snapGuides;
 
     let bestDx: { adj: number; line: number } | null = null;
     for (const mx of movingXs) {
@@ -1128,22 +1251,11 @@ export class CanvasView {
     const off = { x: d.parentMat[4], y: d.parentMat[5] };
     const wRect = { x: rect.x + off.x, y: rect.y + off.y, w: rect.w, h: rect.h };
 
-    const targetXs: number[] = [abr.x, abr.x + abr.w / 2, abr.x + abr.w];
-    const targetYs: number[] = [abr.y, abr.y + abr.h / 2, abr.y + abr.h];
-    if (snapGuides && store.settings.showGuides) {
-      for (const v of ab.guides.v) targetXs.push(abr.x + v);
-      for (const gh of ab.guides.h) targetYs.push(abr.y + gh);
-    }
-    if (snapElements) {
-      for (const el of ab.children) {
-        if (el.id === d.id || !el.visible) continue;
-        const info = worldInfoOf(store.doc, el.id);
-        if (!info) continue;
-        const bb = worldAABB(info);
-        targetXs.push(bb.x, bb.x + bb.w, bb.x + bb.w / 2);
-        targetYs.push(bb.y, bb.y + bb.h, bb.y + bb.h / 2);
-      }
-    }
+    // 이동과 마찬가지로 대상은 드래그 시작 시 모아 둔 것을 쓴다
+    const prepared = this.snapTargets ?? { xs: [], ys: [] };
+    const targetXs = [...prepared.xs];
+    const targetYs = [...prepared.ys];
+    void snapElements; void snapGuides;
     if (snapGrid) {
       const edgeX = handle.includes("w") ? wRect.x : wRect.x + wRect.w;
       const edgeY = handle.includes("n") ? wRect.y : wRect.y + wRect.h;
@@ -1197,10 +1309,11 @@ export class CanvasView {
       h: Math.abs(cur.y - d.startWorld.y)
     };
     const ids: string[] = [...d.base];
+    const map = buildWorldMap(store.doc);
     for (const ab of store.doc.artboards) {
       for (const el of ab.children) {
         if (!el.visible || el.locked) continue;
-        const info = worldInfoOf(store.doc, el.id);
+        const info = map.get(el.id);
         if (!info) continue;
         if (rectsIntersect(rect, worldAABB(info)) && !ids.includes(el.id)) {
           ids.push(el.id);

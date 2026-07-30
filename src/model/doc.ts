@@ -104,6 +104,30 @@ function findIn(
   return null;
 }
 
+export interface IndexEntry {
+  el: OPElement;
+  parentId: string | null;
+}
+
+/**
+ * id -> 요소·부모 색인을 한 번의 순회로 만든다.
+ *
+ * findElement는 호출마다 트리를 걷기 때문에 선택 집합처럼 여러 id를
+ * 훑어야 하는 곳에서 그대로 쓰면 O(n^2)이 된다.
+ */
+export function buildElementIndex(doc: ProjectDoc): Map<string, IndexEntry> {
+  const map = new Map<string, IndexEntry>();
+  for (const ab of doc.artboards) walk(ab.children, null);
+  return map;
+
+  function walk(els: OPElement[], parentId: string | null): void {
+    for (const el of els) {
+      map.set(el.id, { el, parentId });
+      if (el.children.length > 0) walk(el.children, el.id);
+    }
+  }
+}
+
 export function findArtboard(doc: ProjectDoc, id: string): Artboard | null {
   return doc.artboards.find((a) => a.id === id) ?? null;
 }

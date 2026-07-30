@@ -4,8 +4,8 @@ import {
   exportAIFile, groupSelection, openProjectFile, paste, reorder,
   saveProjectFile, selectAll, selectParent, ungroupSelection
 } from "./actions";
-import { findElement } from "./model/doc";
-import { worldInfoOf, writeLocalRect } from "./model/geometry";
+import { buildElementIndex, findElement } from "./model/doc";
+import { buildWorldMap, writeLocalRect } from "./model/geometry";
 import type { CanvasView } from "./ui/canvasView";
 import { closeMenus } from "./ui/contextmenu";
 
@@ -151,11 +151,14 @@ function nudgeSelection(dx: number, dy: number): void {
   const ids = store.editableSelection();
   if (ids.length === 0) return;
   store.beginChange();
+  // 요소마다 worldInfoOf를 부르면 선택이 클 때 제곱으로 느려진다
+  const world = buildWorldMap(store.doc);
+  const index = buildElementIndex(store.doc);
   for (const id of ids) {
-    const f = findElement(store.doc, id);
-    const info = worldInfoOf(store.doc, id);
-    if (!f || !info) continue;
-    writeLocalRect(f.el, info.parentW, info.parentH, {
+    const el = index.get(id)?.el;
+    const info = world.get(id);
+    if (!el || !info) continue;
+    writeLocalRect(el, info.parentW, info.parentH, {
       x: info.localRect.x + dx,
       y: info.localRect.y + dy,
       w: info.localRect.w,

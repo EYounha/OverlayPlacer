@@ -1,7 +1,7 @@
 import type { OPElement, ProjectDoc, Tool, ElementType } from "../types";
 import {
-  cloneDoc, collectImageKeys, createProject, findArtboard, findElement,
-  parseProject, serializeAutosave
+  buildElementIndex, cloneDoc, collectImageKeys, createProject, findArtboard,
+  findElement, parseProject, serializeAutosave
 } from "../model/doc";
 import { pruneImages } from "./imageStore";
 
@@ -190,13 +190,16 @@ export class Store {
 
   /** 선택 중 조상이 이미 선택된 요소를 제외한 최상위 집합 */
   topLevelSelection(): string[] {
+    if (this.selection.length === 0) return [];
     const set = new Set(this.selection);
+    // 색인을 한 번만 만든다. 요소마다 트리를 걷으면 선택이 커질수록
+    // 제곱으로 느려진다.
+    const index = buildElementIndex(this.doc);
     return this.selection.filter((id) => {
-      const found = findElement(this.doc, id);
-      let p = found?.parent;
+      let p = index.get(id)?.parentId ?? null;
       while (p) {
-        if (set.has(p.id)) return false;
-        p = findElement(this.doc, p.id)?.parent ?? null;
+        if (set.has(p)) return false;
+        p = index.get(p)?.parentId ?? null;
       }
       return true;
     });
@@ -207,9 +210,12 @@ export class Store {
    * 이동·삭제·정렬·순서 변경 등 요소를 바꾸는 동작은 모두 이것을 써야 한다.
    */
   editableSelection(): string[] {
-    return this.topLevelSelection().filter((id) => {
-      const found = findElement(this.doc, id);
-      return !!found && !found.el.locked;
+    const top = this.topLevelSelection();
+    if (top.length === 0) return [];
+    const index = buildElementIndex(this.doc);
+    return top.filter((id) => {
+      const entry = index.get(id);
+      return !!entry && !entry.el.locked;
     });
   }
 

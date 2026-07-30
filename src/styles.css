@@ -14,6 +14,8 @@
   --danger: #e5534b;
   --snap: #ff4fa3;
   font-size: 13px;
+  /* WebView2는 이 값이 없으면 스크롤바·기본 배경을 밝게 그린다 */
+  color-scheme: dark;
 }
 
 * {
@@ -23,9 +25,20 @@
 }
 
 html,
-body,
-#app {
+body {
   height: 100%;
+  overflow: hidden;
+  /* 창보다 문서가 작을 때 흰 여백이 보이지 않도록 */
+  background: var(--bg-0);
+}
+
+/*
+ * 창에 고정한다. 흐름 배치로 두면 어떤 이유로든(포커스 이동, 웹뷰 크기
+ * 계산 오차) 문서가 밀려 메뉴바·툴바가 화면 밖으로 나갈 수 있다.
+ */
+#app {
+  position: fixed;
+  inset: 0;
   overflow: hidden;
 }
 
@@ -1268,9 +1281,24 @@ input[type="number"] {
 
 /* 스크롤바 */
 
+/*
+ * 트랙을 지정하지 않으면 WebView2가 밝은 기본 트랙을 그려
+ * 패널 옆에 흰 막대처럼 보인다.
+ */
+* {
+  scrollbar-color: var(--bg-4) transparent;
+  scrollbar-width: thin;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
+  background: transparent;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-track-piece {
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {

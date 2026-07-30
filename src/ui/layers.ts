@@ -244,7 +244,7 @@ export class LayersPanel {
     if (!nameEl) return;
     const input = h("input", { class: "rename-input", value: current, spellcheck: "false" }) as HTMLInputElement;
     nameEl.replaceWith(input);
-    input.focus();
+    input.focus({ preventScroll: true });
     input.select();
     // Escape로 취소할 때 input을 떼어내면 blur가 뒤따라 발생한다.
     // 이 플래그가 없으면 그 blur가 finish(true)를 불러 취소한 값이 저장된다.

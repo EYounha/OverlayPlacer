@@ -624,7 +624,9 @@ export class CanvasView {
 
   private onPointerDown(e: PointerEvent): void {
     if (e.button !== 0 && e.button !== 1) return;
-    this.viewport.focus();
+    // preventScroll 없이 포커스를 주면 브라우저가 스크롤 조상을 움직여
+    // 메뉴바·툴바를 화면 밖으로 밀어낼 수 있다
+    this.viewport.focus({ preventScroll: true });
     this.lastPointer = { x: e.clientX, y: e.clientY };
     const world = this.screenToWorld(e.clientX, e.clientY);
     const screenLocal = this.screenPoint(e);

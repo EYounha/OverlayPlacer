@@ -15,8 +15,10 @@
         "title": "OverlayPlacer",
         "width": 1440,
         "height": 900,
-        "minWidth": 1024,
-        "minHeight": 640
+        "minWidth": 900,
+        "minHeight": 600,
+        "theme": "Dark",
+        "backgroundColor": "#101014"
       }
     ],
     "security": {

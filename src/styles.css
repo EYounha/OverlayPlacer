@@ -484,11 +484,20 @@ select {
   cursor: crosshair;
 }
 
+/*
+ * will-change: transform은 여기 상시로 두지 않는다.
+ * 그 속성이 붙으면 브라우저가 원래 배율로 한 번만 래스터한 뒤 GPU로
+ * 확대만 해서, 텍스트와 테두리가 벡터인데도 확대 시 뭉개진다.
+ * 조작 중에만 JS가 붙였다가 멈추면 떼어내 다시 선명하게 그리도록 한다.
+ */
 .world {
   position: absolute;
   left: 0;
   top: 0;
   transform-origin: 0 0;
+}
+
+.world.interacting {
   will-change: transform;
 }
 
@@ -528,22 +537,40 @@ select {
     linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
 }
 
+/*
+ * 테두리와 라벨은 화면 기준 굵기·크기를 유지한다(--inv-zoom으로 역보정).
+ * 월드와 함께 확대되면 700%에서 테두리가 10px 넘게 두꺼워지고 글자가
+ * 화면을 가득 채워 잘린다. 유니티·피그마도 이런 보조선은 화면 고정이다.
+ */
+/*
+ * 테두리를 border가 아니라 inset box-shadow로 그린다. 이유가 둘이다.
+ *  1) border가 있으면 절대배치 자식이 패딩 박스 기준이 되어 테두리 두께만큼
+ *     밀린다. 역보정으로 두께가 배율마다 달라지면 그 밀림도 같이 변한다.
+ *  2) border-width는 0이 아닌 한 최소 1px로 올림되어 역보정이 먹지 않는다.
+ *     box-shadow는 소수 픽셀을 그대로 그린다.
+ */
 .op-el {
   position: absolute;
-  border: 1.5px solid;
-  border-radius: 2px;
+  box-shadow: inset 0 0 0 calc(1.5px * var(--inv-zoom, 1)) var(--el-color, #888);
+  border-radius: calc(2px * var(--inv-zoom, 1));
   overflow: visible;
 }
 
+/*
+ * 라벨은 화면 기준 크기를 유지한다. transform: scale 대신 글꼴·여백에
+ * 역배율을 걸어야 요소마다 스택 컨텍스트가 생기지 않는다 —
+ * 800개 기준으로 transform 방식은 프레임당 17ms를 더 썼다.
+ */
 .el-label {
   position: absolute;
-  top: 2px;
-  left: 4px;
-  font-size: 11px;
+  top: 0;
+  left: 0;
+  padding: calc(2px * var(--inv-zoom, 1)) calc(4px * var(--inv-zoom, 1));
+  font-size: max(0.5px, calc(11px * var(--inv-zoom, 1)));
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
-  max-width: calc(100% - 8px);
+  max-width: 100%;
   text-overflow: ellipsis;
   pointer-events: none;
   opacity: 0.9;
@@ -557,14 +584,14 @@ select {
 .guide-v {
   top: 0;
   bottom: 0;
-  width: 1px;
+  width: calc(1px * var(--inv-zoom, 1));
   background: rgba(56, 184, 196, 0.75);
 }
 
 .guide-h {
   left: 0;
   right: 0;
-  height: 1px;
+  height: calc(1px * var(--inv-zoom, 1));
   background: rgba(56, 184, 196, 0.75);
 }
 

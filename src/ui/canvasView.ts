@@ -93,6 +93,8 @@ export class CanvasView {
    * 경로이므로, 문서가 바뀔 때만 무효화하고 그 사이에는 재사용한다.
    */
   private worldCache: Map<string, WorldEntry> | null = null;
+  /** 조작이 멎은 뒤 고해상도로 다시 그리게 하는 타이머 */
+  private settleTimer: number | null = null;
   private lastPointer: Point = { x: 0, y: 0 };
 
   private worldMap(): Map<string, WorldEntry> {
@@ -119,7 +121,12 @@ export class CanvasView {
     this.bindEvents();
     store.on("doc", () => { this.worldCache = null; this.syncWorld(); this.renderOverlay(); });
     store.on("transient", () => { this.worldCache = null; this.syncWorld(); this.renderOverlay(); });
-    store.on("view", () => { this.applyViewTransform(); this.renderOverlay(); this.syncLabels(); });
+    store.on("view", () => {
+      this.applyViewTransform();
+      this.markInteracting();
+      this.renderOverlay();
+      this.syncLabels();
+    });
     store.on("selection", () => { this.renderOverlay(); this.syncLabels(); });
     store.on("settings", () => { this.syncWorld(); this.renderOverlay(); });
     store.on("tool", () => this.updateCursor());
@@ -147,9 +154,30 @@ export class CanvasView {
 
   /* ================= 렌더링 ================= */
 
+  /** 뷰 변환만 반영한다 (will-change는 건드리지 않는다) */
   private applyViewTransform(): void {
     const { zoom, panX, panY } = store.view;
     this.world.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    // 테두리·라벨·가이드가 화면 기준 크기를 유지하도록 역배율을 넘긴다
+    this.world.style.setProperty("--zoom", String(zoom));
+    this.world.style.setProperty("--inv-zoom", String(1 / zoom));
+  }
+
+  /**
+   * 확대·이동 중에만 will-change를 켠다.
+   *
+   * 상시로 켜두면 브라우저가 원래 배율의 래스터를 그대로 확대해 텍스트와
+   * 테두리가 뭉개진다. 움직임이 멎으면 떼어내 현재 배율로 다시 그리게 한다.
+   * 문서 편집 경로에서는 부르지 않는다 — 켜고 끄기를 반복하면 레이어
+   * 승격·해제가 되풀이돼 편집마다 전체를 다시 래스터하게 된다.
+   */
+  private markInteracting(): void {
+    this.world.classList.add("interacting");
+    if (this.settleTimer !== null) window.clearTimeout(this.settleTimer);
+    this.settleTimer = window.setTimeout(() => {
+      this.settleTimer = null;
+      this.world.classList.remove("interacting");
+    }, 180);
   }
 
   /**
@@ -299,7 +327,10 @@ export class CanvasView {
     setStyle(node, "transform", el.rotation ? `rotate(${el.rotation}deg)` : "");
     setStyle(node, "opacity", String(el.opacity));
     setStyle(node, "display", el.visible ? "" : "none");
-    setStyle(node, "borderColor", el.color);
+    // 테두리는 box-shadow로 그리므로 색만 넘긴다 (위 .op-el 주석 참조)
+    if (node.style.getPropertyValue("--el-color") !== el.color) {
+      node.style.setProperty("--el-color", el.color);
+    }
     setStyle(node, "background", hexWithAlpha(el.color, 0.14));
     const label = node.firstElementChild as HTMLElement | null;
     if (label && label.classList.contains("el-label")) {

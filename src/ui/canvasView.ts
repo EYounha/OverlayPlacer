@@ -15,6 +15,8 @@ import { importText } from "../actions";
 import { getImage, registerImage } from "../state/imageStore";
 
 const SNAP_SCREEN_PX = 6;
+/** 화면 밖 여유 — 이 안에서 움직이는 동안은 DOM을 다시 만들지 않는다 */
+const CULL_MARGIN_PX = 600;
 const MIN_ZOOM = 0.02;
 const MAX_ZOOM = 32;
 
@@ -95,6 +97,11 @@ export class CanvasView {
   private worldCache: Map<string, WorldEntry> | null = null;
   /** 조작이 멎은 뒤 고해상도로 다시 그리게 하는 타이머 */
   private settleTimer: number | null = null;
+  /**
+   * 마지막으로 DOM을 만든 월드 영역(여유 포함).
+   * 화면이 이 안에 있으면 새로 보일 것이 없으므로 다시 만들지 않는다.
+   */
+  private culledRect: Rect | null = null;
   private lastPointer: Point = { x: 0, y: 0 };
 
   private worldMap(): Map<string, WorldEntry> {
@@ -124,6 +131,8 @@ export class CanvasView {
     store.on("view", () => {
       this.applyViewTransform();
       this.markInteracting();
+      // 여유 영역을 벗어났을 때만 DOM을 다시 만든다
+      if (this.needsRecull()) this.syncWorld();
       this.renderOverlay();
       this.syncLabels();
     });
@@ -153,6 +162,30 @@ export class CanvasView {
   }
 
   /* ================= 렌더링 ================= */
+
+  /** 현재 화면에 대응하는 월드 영역 (margin은 화면 픽셀 단위 여유) */
+  private visibleWorldRect(marginPx: number): Rect {
+    const r = this.viewport.getBoundingClientRect();
+    const { zoom, panX, panY } = store.view;
+    const m = marginPx / zoom;
+    return {
+      x: -panX / zoom - m,
+      y: -panY / zoom - m,
+      w: r.width / zoom + m * 2,
+      h: r.height / zoom + m * 2
+    };
+  }
+
+  /** 지난번 만든 영역으로 지금 화면을 감당할 수 있는지 */
+  private needsRecull(): boolean {
+    if (!this.culledRect) return true;
+    // 밖으로 나갔으면 새로 보일 것이 있다
+    if (!rectContainsRect(this.culledRect, this.visibleWorldRect(0))) return true;
+    // 확대해서 필요한 영역이 훨씬 좁아졌으면 남은 노드를 걷어낸다.
+    // 이 조건이 없으면 축소 상태에서 만든 노드가 계속 남는다.
+    const want = this.visibleWorldRect(CULL_MARGIN_PX);
+    return this.culledRect.w * this.culledRect.h > want.w * want.h * 4;
+  }
 
   /** 뷰 변환만 반영한다 (will-change는 건드리지 않는다) */
   private applyViewTransform(): void {
@@ -187,6 +220,11 @@ export class CanvasView {
    * 비용이 커진다. 여기서는 id로 노드를 재사용하고 바뀐 것만 손댄다.
    */
   private syncWorld(): void {
+    // 화면 밖 요소는 DOM을 만들지 않는다. 여유를 크게 잡아 두면 이동
+    // 중에는 대부분 다시 만들 필요가 없어 팬이 계속 가벼운 변환으로 끝난다.
+    const cull = this.visibleWorldRect(CULL_MARGIN_PX);
+    this.culledRect = cull;
+    const world = this.worldMap();
     const seenAb = new Set<string>();
     let cursor: Element | null = this.world.firstElementChild;
     for (const ab of store.doc.artboards) {
@@ -201,7 +239,7 @@ export class CanvasView {
       } else {
         cursor = cursor.nextElementSibling;
       }
-      this.syncArtboard(ab, parts);
+      this.syncArtboard(ab, parts, cull, world);
     }
     for (const [id, parts] of [...this.abNodes]) {
       if (!seenAb.has(id)) {
@@ -222,7 +260,9 @@ export class CanvasView {
     return { root, bg, grid, content, guides };
   }
 
-  private syncArtboard(ab: Artboard, parts: ArtboardNode): void {
+  private syncArtboard(
+    ab: Artboard, parts: ArtboardNode, cull: Rect, world: Map<string, WorldEntry>
+  ): void {
     const { root, bg, grid, content, guides } = parts;
     setStyle(root, "left", `${ab.position.x}px`);
     setStyle(root, "top", `${ab.position.y}px`);
@@ -243,7 +283,12 @@ export class CanvasView {
     }
 
     this.syncGuides(ab, guides);
-    this.syncElements(content, ab.children, ab.width, ab.height, content.firstElementChild);
+    // 아트보드 전체가 화면 밖이면 내용까지 걷어낸다
+    const visible = rectsIntersect(cull, artboardWorldRect(ab));
+    this.syncElements(
+      content, visible ? ab.children : [], ab.width, ab.height,
+      content.firstElementChild, cull, world
+    );
   }
 
   private syncGuides(ab: Artboard, layer: HTMLElement): void {
@@ -275,10 +320,16 @@ export class CanvasView {
    * 뒤처리 루프에 지워진다.
    */
   private syncElements(
-    container: HTMLElement, els: OPElement[], pw: number, ph: number, from: Element | null
+    container: HTMLElement, els: OPElement[], pw: number, ph: number,
+    from: Element | null, cull: Rect, world: Map<string, WorldEntry>
   ): void {
     let cursor: Element | null = from;
+    const rendered = new Set<string>();
     for (const el of els) {
+      // 자손까지 포함한 경계가 화면 밖이면 통째로 건너뛴다
+      const entry = world.get(el.id);
+      if (entry && !rectsIntersect(cull, entry.subtreeAABB)) continue;
+      rendered.add(el.id);
       let node = this.nodeMap.get(el.id);
       if (!node) {
         node = h("div", { class: "op-el", dataset: { id: el.id } },
@@ -294,12 +345,16 @@ export class CanvasView {
       }
       const r = this.applyElementStyle(node, el, pw, ph);
       // 첫 자식은 라벨이므로 그 다음부터 자식 요소를 배치한다
-      this.syncElements(node, el.children, r.w, r.h, node.firstElementChild?.nextElementSibling ?? null);
+      this.syncElements(
+        node, el.children, r.w, r.h,
+        node.firstElementChild?.nextElementSibling ?? null, cull, world
+      );
     }
     // 문서에서 사라진 노드만 걷어낸다.
     // 커서를 따라가며 지우면, 재귀 중 다른 부모로 옮겨진 노드까지
     // 함께 지워진다(레이어 패널로 부모를 바꿀 때 요소가 사라지던 원인).
-    const wanted = new Set(els.map((e) => e.id));
+    // 컬링된 것도 여기서 걷힌다 (rendered에 없으므로)
+    const wanted = rendered;
     for (const child of [...container.children]) {
       const id = (child as HTMLElement).dataset?.id;
       if (!id) continue; // .el-label 등 요소가 아닌 노드
@@ -387,9 +442,12 @@ export class CanvasView {
 
     // 선택 외곽선은 개수가 많아질 수 있으므로 노드를 재사용한다.
     // 매 프레임 수백 개를 새로 만들면 방향키 한 번에도 화면이 멈춘다.
+    // 화면 밖 선택 항목의 외곽선은 그리지 않는다 — 전체 선택 시 대부분이
+    // 화면 밖인데 SVG를 다 만들면 그만큼 낭비다
+    const visible = this.visibleWorldRect(0);
     const selInfos = store.selection
       .map((id) => world.get(id))
-      .filter((i): i is WorldEntry => !!i);
+      .filter((i): i is WorldEntry => !!i && rectsIntersect(visible, i.aabb));
     this.syncSelectionOutlines(selInfos);
 
     const single = store.selection.length === 1;
@@ -1440,6 +1498,13 @@ export class CanvasView {
 }
 
 /* ================= 헬퍼 ================= */
+
+/** outer가 inner를 완전히 담고 있는지 */
+function rectContainsRect(outer: Rect, inner: Rect): boolean {
+  return inner.x >= outer.x && inner.y >= outer.y &&
+    inner.x + inner.w <= outer.x + outer.w &&
+    inner.y + inner.h <= outer.y + outer.h;
+}
 
 function hexWithAlpha(hex: string, alpha: number): string {
   const a = Math.round(alpha * 255).toString(16).padStart(2, "0");

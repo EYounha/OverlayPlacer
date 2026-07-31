@@ -133,6 +133,24 @@ export interface WorldEntry extends WorldInfo {
   el: OPElement;
   parent: OPElement | null;
   artboard: Artboard;
+  /** 회전을 반영한 자기 자신의 월드 경계 */
+  aabb: Rect;
+  /**
+   * 자손까지 포함한 월드 경계.
+   * 자식은 부모 밖으로 나갈 수 있으므로(overflow: visible) 화면 밖 요소를
+   * 걸러낼 때는 이 값을 봐야 한다 — 자기 경계만 보면 보이는 자식이 사라진다.
+   */
+  subtreeAABB: Rect;
+}
+
+function unionRect(a: Rect, b: Rect): Rect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return {
+    x, y,
+    w: Math.max(a.x + a.w, b.x + b.w) - x,
+    h: Math.max(a.y + a.h, b.y + b.h) - y
+  };
 }
 
 /**
@@ -149,10 +167,12 @@ export function buildWorldMap(doc: ProjectDoc): Map<string, WorldEntry> {
   }
   return map;
 
+  /** 각 요소의 subtreeAABB를 채우기 위해 자손 경계의 합집합을 돌려준다 */
   function walk(
     els: OPElement[], parentMat: Mat, pw: number, ph: number,
     parent: OPElement | null, artboard: Artboard
-  ): void {
+  ): Rect | null {
+    let union: Rect | null = null;
     for (const el of els) {
       const rect = localRectOf(el, pw, ph);
       let m = matMul(parentMat, matTranslate(rect.x, rect.y));
@@ -162,13 +182,20 @@ export function buildWorldMap(doc: ProjectDoc): Map<string, WorldEntry> {
           matMul(matRotateDeg(el.rotation), matTranslate(-rect.w / 2, -rect.h / 2))
         ));
       }
-      map.set(el.id, {
+      const info: WorldInfo = {
         matrix: m, w: rect.w, h: rect.h,
-        parentW: pw, parentH: ph, localRect: rect,
-        el, parent, artboard
-      });
-      if (el.children.length > 0) walk(el.children, m, rect.w, rect.h, el, artboard);
+        parentW: pw, parentH: ph, localRect: rect
+      };
+      const aabb = worldAABB(info);
+      const entry: WorldEntry = { ...info, el, parent, artboard, aabb, subtreeAABB: aabb };
+      map.set(el.id, entry);
+      if (el.children.length > 0) {
+        const childUnion = walk(el.children, m, rect.w, rect.h, el, artboard);
+        if (childUnion) entry.subtreeAABB = unionRect(aabb, childUnion);
+      }
+      union = union ? unionRect(union, entry.subtreeAABB) : entry.subtreeAABB;
     }
+    return union;
   }
 }
 

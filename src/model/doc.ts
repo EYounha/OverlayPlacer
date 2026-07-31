@@ -63,19 +63,6 @@ export function cloneDoc<T>(v: T): T {
 
 /* ---------- 탐색 ---------- */
 
-export function walkElements(
-  roots: OPElement[],
-  fn: (el: OPElement, parent: OPElement | null, depth: number) => void | boolean,
-  parent: OPElement | null = null,
-  depth = 0
-): boolean {
-  for (const el of roots) {
-    if (fn(el, parent, depth) === false) return false;
-    if (!walkElements(el.children, fn, el, depth + 1)) return false;
-  }
-  return true;
-}
-
 export interface FoundElement {
   el: OPElement;
   parent: OPElement | null;
@@ -130,10 +117,6 @@ export function buildElementIndex(doc: ProjectDoc): Map<string, IndexEntry> {
 
 export function findArtboard(doc: ProjectDoc, id: string): Artboard | null {
   return doc.artboards.find((a) => a.id === id) ?? null;
-}
-
-export function artboardOf(doc: ProjectDoc, elementId: string): Artboard | null {
-  return findElement(doc, elementId)?.artboard ?? null;
 }
 
 /** 조상 체인 (아트보드 직계 → … → 부모) */
@@ -263,6 +246,9 @@ export function parseProject(text: string): ProjectDoc {
     throw new Error("올바른 레이아웃 문서가 아닙니다.");
   }
   const r = raw as Record<string, unknown>;
+  if (typeof r.format === "string" && r.format !== "overlayplacer") {
+    throw new Error(`지원하지 않는 형식입니다: ${r.format}`);
+  }
 
   // 아트보드 배열이 없고 요소 배열만 있는 축약형도 허용
   let artboardsRaw: unknown[] = [];
@@ -319,18 +305,21 @@ export function parseProject(text: string): ProjectDoc {
         v: numArr(guides.v),
         h: numArr(guides.h)
       },
-      children: kids.map((k) => normElement(k))
+      children: kids.map((k) => normElement(k, 0))
     });
   }
 
-  function normElement(e: unknown): OPElement {
+  function normElement(e: unknown, depth: number): OPElement {
     const o = (typeof e === "object" && e !== null ? e : {}) as Record<string, unknown>;
     const units = (typeof o.units === "object" && o.units !== null ? o.units : {}) as Record<string, unknown>;
     const type = VALID_TYPES.has(o.type as ElementType) ? (o.type as ElementType) : "custom";
-    const kids = Array.isArray(o.children) ? o.children : [];
+    // 비정상적으로 깊은 중첩에서 스택 오버플로가 새어 나가지 않도록 자른다
+    const kids = depth >= 64 ? [] : (Array.isArray(o.children) ? o.children : []);
     const metaRaw = (typeof o.meta === "object" && o.meta !== null ? o.meta : {}) as Record<string, unknown>;
     const metaOut: Record<string, string> = {};
     for (const [k, v] of Object.entries(metaRaw)) {
+      // 프로토타입 오염 방지
+      if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
       metaOut[k] = typeof v === "string" ? v : JSON.stringify(v);
     }
     return createElement({
@@ -354,7 +343,7 @@ export function parseProject(text: string): ProjectDoc {
       visible: o.visible !== false,
       locked: o.locked === true,
       meta: metaOut,
-      children: kids.map((k) => normElement(k))
+      children: kids.map((k) => normElement(k, depth + 1))
     });
   }
 

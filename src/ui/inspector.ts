@@ -252,7 +252,7 @@ export class InspectorPanel {
         onclick: () => {
           this.mutate(el.id, (e) => {
             let n = 1;
-            while (`key${n}` in e.meta) n++;
+            while (Object.hasOwn(e.meta, `key${n}`)) n++;
             e.meta[`key${n}`] = "";
           });
         }
@@ -267,8 +267,12 @@ export class InspectorPanel {
     keyInput.addEventListener("change", () => {
       const newKey = keyInput.value.trim();
       if (!newKey || newKey === key) { keyInput.value = key; return; }
+      if (newKey === "__proto__" || newKey === "constructor" || newKey === "prototype") {
+        keyInput.value = key;
+        return;
+      }
       this.mutate(elId, (e) => {
-        if (newKey in e.meta) return;
+        if (Object.hasOwn(e.meta, newKey)) return;
         const val = e.meta[key];
         delete e.meta[key];
         e.meta[newKey] = val;

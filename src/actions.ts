@@ -9,7 +9,9 @@ import {
   parentWorldMatrix, worldInfoOf, writeLocalRect, type Mat
 } from "./model/geometry";
 import { toast } from "./ui/toast";
-import { registerImage } from "./state/imageStore";
+import { imagesReady, registerImage } from "./state/imageStore";
+import { openTextFile, readClipboardText, saveTextFile, writeClipboardText } from "./platform";
+import type { ProjectDoc } from "./types";
 
 /**
  * 요소의 로컬 좌표계 -> 부모 좌표계 변환.
@@ -92,7 +94,10 @@ export function copySelection(): void {
     .map((id) => findElement(store.doc, id)?.el)
     .filter((el): el is OPElement => !!el)
     .map((el) => cloneDoc(el));
-  void navigator.clipboard?.writeText(JSON.stringify(internalClipboard, null, 2)).catch(() => {});
+  // 시스템 클립보드에는 다시 가져올 수 있는 형식으로 쓴다
+  void writeClipboardText(JSON.stringify(
+    { format: "overlayplacer-clip", version: 1, elements: internalClipboard }, null, 2
+  ));
   toast(`${internalClipboard.length}개 요소 복사됨`);
 }
 
@@ -101,12 +106,12 @@ export function cutSelection(): void {
   deleteSelection();
 }
 
-export function paste(): void {
-  if (internalClipboard.length === 0) return;
+function insertElements(els: OPElement[]): void {
+  if (els.length === 0) return;
   store.beginChange();
   const ab = store.activeArtboard();
   const newIds: string[] = [];
-  for (const el of internalClipboard) {
+  for (const el of els) {
     const copy = reassignIds(cloneDoc(el));
     copy.x += copy.units.x === "%" ? 2 : 16;
     copy.y += copy.units.y === "%" ? 2 : 16;
@@ -117,26 +122,76 @@ export function paste(): void {
   store.commit();
 }
 
+/**
+ * 붙여넣기. 앱 내부 클립보드를 우선 쓰고, 비어 있으면 시스템 클립보드를
+ * 해석한다 — 요소 묶음(overlayplacer-clip)은 삽입, 전체 레이아웃 문서는
+ * 확인 후 가져온다. AI가 준 JSON을 Ctrl+V로 바로 넣는 핵심 경로다.
+ */
+export async function paste(): Promise<void> {
+  if (internalClipboard.length > 0) {
+    insertElements(internalClipboard);
+    return;
+  }
+  const text = await readClipboardText();
+  if (!text) return;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return; // 일반 텍스트 — 붙여넣을 것 없음
+  }
+  if (typeof raw !== "object" || raw === null) return;
+  const r = raw as Record<string, unknown>;
+  if (r.format === "overlayplacer-clip" && Array.isArray(r.elements)) {
+    // 관용 파서를 재사용하기 위해 임시 문서로 감싼다
+    try {
+      const doc = parseProject(JSON.stringify({
+        artboards: [{ width: 1920, height: 1080, children: r.elements }]
+      }));
+      insertElements(doc.artboards[0].children);
+      toast(`${doc.artboards[0].children.length}개 요소 붙여넣음`);
+    } catch {
+      toast("붙여넣을 수 없는 형식입니다");
+    }
+    return;
+  }
+  if (Array.isArray(r.artboards) || Array.isArray(r.children) || Array.isArray(r.elements)) {
+    importText(text);
+  }
+}
+
 /* ---------- 그룹 ---------- */
 
 export function groupSelection(): void {
   const ids = store.editableSelection();
-  if (ids.length < 1) return;
-  const firsts = ids.map((id) => findElement(store.doc, id)!).filter(Boolean);
+  if (ids.length < 2) return;
+  const found = ids
+    .map((id) => findElement(store.doc, id))
+    .filter((f): f is NonNullable<typeof f> => !!f);
+  if (found.length < 2) return;
   // 동일 부모 하위만 그룹화
-  const parentId = firsts[0].parent?.id ?? null;
-  if (!firsts.every((f) => (f.parent?.id ?? null) === parentId)) {
+  const parentId = found[0].parent?.id ?? null;
+  if (!found.every((f) => (f.parent?.id ?? null) === parentId)) {
     toast("같은 부모에 속한 요소만 그룹화할 수 있습니다");
     return;
   }
   store.beginChange();
-  const found = ids.map((id) => findElement(store.doc, id)!);
   const artboard = found[0].artboard;
   const parent = found[0].parent;
   const parentW = parent ? worldInfoOf(store.doc, parent.id)!.w : artboard.width;
   const parentH = parent ? worldInfoOf(store.doc, parent.id)!.h : artboard.height;
 
-  const rects = found.map((f) => localRectOf(f.el, parentW, parentH));
+  // 회전된 자식은 비회전 사각형이 아니라 회전 반영 AABB로 감싸야 한다
+  const rects = found.map((f) => {
+    const r = localRectOf(f.el, parentW, parentH);
+    if (!f.el.rotation) return r;
+    const rad = (f.el.rotation * Math.PI) / 180;
+    const cos = Math.abs(Math.cos(rad));
+    const sin = Math.abs(Math.sin(rad));
+    const w = r.w * cos + r.h * sin;
+    const hh = r.w * sin + r.h * cos;
+    return { x: r.x + r.w / 2 - w / 2, y: r.y + r.h / 2 - hh / 2, w, h: hh };
+  });
   const minX = Math.min(...rects.map((r) => r.x));
   const minY = Math.min(...rects.map((r) => r.y));
   const maxX = Math.max(...rects.map((r) => r.x + r.w));
@@ -218,20 +273,54 @@ export function reorder(direction: "front" | "back" | "forward" | "backward"): v
   const ids = store.editableSelection();
   if (ids.length === 0) return;
   store.beginChange();
+
+  // 형제 배열 단위로 묶는다 — 선택이 여러 부모에 걸칠 수 있다
+  const groups = new Map<OPElement[], OPElement[]>();
   for (const id of ids) {
     const found = findElement(store.doc, id);
     if (!found) continue;
-    const { siblings, el } = found;
-    const idx = siblings.indexOf(el);
-    siblings.splice(idx, 1);
-    let target = idx;
+    const list = groups.get(found.siblings) ?? [];
+    list.push(found.el);
+    groups.set(found.siblings, list);
+  }
+
+  for (const [siblings, els] of groups) {
+    // z순서(배열 순서) 기준 오름차순으로 정리해 상대 순서를 보존한다
+    els.sort((a, b) => siblings.indexOf(a) - siblings.indexOf(b));
+    const selected = new Set(els);
     switch (direction) {
-      case "front": target = siblings.length; break;
-      case "back": target = 0; break;
-      case "forward": target = Math.min(siblings.length, idx + 1); break;
-      case "backward": target = Math.max(0, idx - 1); break;
+      case "front": {
+        for (const el of els) siblings.splice(siblings.indexOf(el), 1);
+        siblings.push(...els);
+        break;
+      }
+      case "back": {
+        for (const el of els) siblings.splice(siblings.indexOf(el), 1);
+        siblings.unshift(...els);
+        break;
+      }
+      case "forward": {
+        // 위(뒤쪽 인덱스)부터 처리해야 선택끼리 서로 뛰어넘지 않는다
+        for (let i = els.length - 1; i >= 0; i--) {
+          const idx = siblings.indexOf(els[i]);
+          if (idx >= siblings.length - 1) continue;
+          if (selected.has(siblings[idx + 1])) continue;
+          siblings.splice(idx, 1);
+          siblings.splice(idx + 1, 0, els[i]);
+        }
+        break;
+      }
+      case "backward": {
+        for (const el of els) {
+          const idx = siblings.indexOf(el);
+          if (idx <= 0) continue;
+          if (selected.has(siblings[idx - 1])) continue;
+          siblings.splice(idx, 1);
+          siblings.splice(idx - 1, 0, el);
+        }
+        break;
+      }
     }
-    siblings.splice(target, 0, el);
   }
   store.commit();
 }
@@ -287,7 +376,9 @@ export function distribute(axis: "h" | "v"): void {
     return;
   }
   store.beginChange();
-  const found = ids.map((id) => findElement(store.doc, id)!).filter(Boolean);
+  const found = ids
+    .map((id) => findElement(store.doc, id))
+    .filter((f): f is NonNullable<typeof f> => !!f);
   const items = found.map((f) => {
     const parent = f.parent;
     const pw = parent ? worldInfoOf(store.doc, parent.id)!.w : f.artboard.width;
@@ -295,20 +386,23 @@ export function distribute(axis: "h" | "v"): void {
     return { f, pw, ph, rect: localRectOf(f.el, pw, ph) };
   });
 
-  const key = axis === "h" ? "x" : "y";
-  const size = axis === "h" ? "w" : "h";
-  items.sort((a, b) => (a.rect as never as Record<string, number>)[key] - (b.rect as never as Record<string, number>)[key]);
-  const first = items[0].rect as never as Record<string, number>;
-  const last = items[items.length - 1].rect as never as Record<string, number>;
-  const total = last[key] + last[size] - first[key];
-  const occupied = items.reduce((s, i) => s + (i.rect as never as Record<string, number>)[size], 0);
+  const pos = axis === "h" ? (r: Rect) => r.x : (r: Rect) => r.y;
+  const size = axis === "h" ? (r: Rect) => r.w : (r: Rect) => r.h;
+  const setPos = axis === "h"
+    ? (r: Rect, v: number) => { r.x = v; }
+    : (r: Rect, v: number) => { r.y = v; };
+
+  items.sort((a, b) => pos(a.rect) - pos(b.rect));
+  const first = items[0].rect;
+  const last = items[items.length - 1].rect;
+  const total = pos(last) + size(last) - pos(first);
+  const occupied = items.reduce((sum, i) => sum + size(i.rect), 0);
   const gap = (total - occupied) / (items.length - 1);
 
-  let cursor = first[key];
+  let cursor = pos(first);
   for (const it of items) {
-    const r = it.rect as never as Record<string, number>;
-    r[key] = cursor;
-    cursor += r[size] + gap;
+    setPos(it.rect, cursor);
+    cursor += size(it.rect) + gap;
     writeLocalRect(it.f.el, it.pw, it.ph, it.rect);
   }
   store.commit();
@@ -317,7 +411,9 @@ export function distribute(axis: "h" | "v"): void {
 /* ---------- 표시 · 잠금 ---------- */
 
 export function toggleVisible(): void {
-  const els = store.selectedElements();
+  const els = store.editableSelection()
+    .map((id) => findElement(store.doc, id)?.el)
+    .filter((el): el is OPElement => !!el);
   if (els.length === 0) return;
   store.beginChange();
   const target = !els.every((e) => e.visible === false);
@@ -456,68 +552,74 @@ function accumulatedRotation(doc: typeof store.doc, id: string): number {
 
 /* ---------- 파일 입출력 ---------- */
 
-export function saveProjectFile(): void {
+export async function saveProjectFile(): Promise<void> {
+  // 이미지 복원(IndexedDB)이 끝나기 전에 저장하면 배경이 빠진 파일이 나온다
+  await imagesReady();
   const text = serializeProject(store.doc);
-  downloadText(text, `${sanitizeFileName(store.doc.meta.name)}.opl.json`);
+  const result = await saveTextFile(`${sanitizeFileName(store.doc.meta.name)}.opl.json`, text);
+  if (result === "cancelled") return;
   store.dirty = false;
-  toast("프로젝트 저장됨");
+  toast(result === "saved" ? "프로젝트 저장됨" : "프로젝트 파일을 내려받습니다");
 }
 
-export function exportAIFile(): void {
+export async function exportAIFile(): Promise<void> {
   const text = serializeForAI(store.doc);
-  downloadText(text, `${sanitizeFileName(store.doc.meta.name)}.layout.json`);
+  const result = await saveTextFile(`${sanitizeFileName(store.doc.meta.name)}.layout.json`, text);
+  if (result === "cancelled") return;
   toast("AI용 레이아웃 JSON 내보내기 완료");
 }
 
 export async function copyAIToClipboard(): Promise<void> {
   const text = serializeForAI(store.doc);
-  try {
-    await navigator.clipboard.writeText(text);
-    toast("AI용 레이아웃 JSON이 클립보드에 복사되었습니다");
-  } catch {
-    toast("클립보드 접근이 거부되었습니다");
-  }
+  const ok = await writeClipboardText(text);
+  toast(ok ? "AI용 레이아웃 JSON이 클립보드에 복사되었습니다" : "클립보드 접근이 거부되었습니다");
 }
 
 export async function importFromClipboard(): Promise<void> {
-  try {
-    const text = await navigator.clipboard.readText();
-    importText(text);
-  } catch {
+  const text = await readClipboardText();
+  if (text === null) {
     toast("클립보드 접근이 거부되었습니다 · 파일 열기를 이용하세요");
+    return;
   }
+  importText(text);
 }
 
+/**
+ * 문서 가져오기. 현재 문서에 작업 내용이 있으면 확인을 거친다 —
+ * 파일을 잘못 떨구는 것만으로 전체가 교체되는 사고를 막는다.
+ * (되돌리기로 복구는 가능하지만, 묻는 쪽이 안전하다)
+ */
 export function importText(text: string): void {
+  let doc: ProjectDoc;
   try {
-    const doc = parseProject(text);
-    store.replaceDoc(doc);
-    toast(`불러오기 완료 · 아트보드 ${doc.artboards.length}개`);
+    doc = parseProject(text);
   } catch (e) {
     toast(`불러오기 실패 · ${(e as Error).message}`);
+    return;
   }
-}
-
-export function openProjectFile(): void {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".json,application/json";
-  input.onchange = () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    void file.text().then(importText);
+  const apply = () => {
+    store.replaceDoc(doc);
+    toast(`불러오기 완료 · 아트보드 ${doc.artboards.length}개`);
   };
-  input.click();
+  const hasWork = store.doc.artboards.length > 1 ||
+    store.doc.artboards.some((a) => a.children.length > 0);
+  if (!hasWork) {
+    apply();
+    return;
+  }
+  void import("./ui/dialogs").then((d) =>
+    d.confirmDialog(
+      "레이아웃 가져오기",
+      "가져오면 현재 문서를 대체합니다. (실행 취소로 되돌릴 수 있습니다)",
+      "가져오기",
+      apply
+    )
+  );
 }
 
-function downloadText(text: string, filename: string): void {
-  const blob = new Blob([text], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+export async function openProjectFile(): Promise<void> {
+  const text = await openTextFile();
+  if (text !== null) importText(text);
 }
 
 function sanitizeFileName(name: string): string {
@@ -551,8 +653,8 @@ export function clearBackgroundImage(artboard: Artboard): void {
   store.beginChange();
   const ab = findArtboard(store.doc, artboard.id);
   if (!ab) { store.cancelChange(); return; }
-  // 실제 이미지 데이터는 히스토리에 남지 않으므로 여기서 지우지 않는다.
-  // 되돌리기로 복구할 수 있도록 두고, 자동저장 시점에 참조 없는 것만 정리된다.
+  // 실제 이미지 데이터는 여기서 지우지 않는다 — 되돌리기로 복구할 수 있어야
+  // 하기 때문이다. 참조를 잃은 이미지는 다음 시작 시(pruneStaleImages) 정리된다.
   ab.background.image = null;
   store.commit();
 }

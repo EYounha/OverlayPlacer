@@ -35,12 +35,6 @@ export function registerImage(dataUrl: string): string {
   return key;
 }
 
-/** 이미 정해진 키로 등록 (프로젝트 파일 불러오기 등) */
-export function registerImageWithKey(key: string, dataUrl: string): void {
-  memory.set(key, dataUrl);
-  void persist(key, dataUrl);
-}
-
 export function getImage(key: string | null): string | null {
   if (!key) return null;
   return memory.get(key) ?? null;
@@ -48,12 +42,6 @@ export function getImage(key: string | null): string | null {
 
 export function hasImage(key: string | null): boolean {
   return !!key && memory.has(key);
-}
-
-export function forgetImage(key: string | null): void {
-  if (!key) return;
-  memory.delete(key);
-  void remove(key);
 }
 
 /** 문서가 더 이상 참조하지 않는 이미지를 정리한다. */
@@ -99,13 +87,31 @@ function db(): Promise<IDBDatabase | null> {
   return dbPromise;
 }
 
+/**
+ * 마지막 영속화 실패 여부. 쿼터 초과 등으로 IndexedDB 쓰기가 실패하면
+ * 다음 실행에서 배경 이미지가 사라진다 — 조용히 넘기지 않고 상태바에 알린다.
+ */
+let lastPersistFailed = false;
+
+export function imagePersistFailed(): boolean {
+  return lastPersistFailed;
+}
+
 async function persist(key: string, dataUrl: string): Promise<void> {
   const conn = await db();
   if (!conn) return;
-  try {
-    const tx = conn.transaction(STORE_NAME, "readwrite");
-    tx.objectStore(STORE_NAME).put(dataUrl, key);
-  } catch { /* 저장 실패는 무시 — 메모리에는 남아 있다 */ }
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = conn.transaction(STORE_NAME, "readwrite");
+      tx.objectStore(STORE_NAME).put(dataUrl, key);
+      tx.oncomplete = () => { lastPersistFailed = false; resolve(); };
+      tx.onerror = () => { lastPersistFailed = true; resolve(); };
+      tx.onabort = () => { lastPersistFailed = true; resolve(); };
+    } catch {
+      lastPersistFailed = true;
+      resolve();
+    }
+  });
 }
 
 async function remove(key: string): Promise<void> {
@@ -117,8 +123,23 @@ async function remove(key: string): Promise<void> {
   } catch { /* 무시 */ }
 }
 
+let hydration: Promise<number> | null = null;
+
+/**
+ * 이미지 복원 완료를 기다린다. 복원 전에 프로젝트를 저장하면
+ * 배경이 조용히 빠진 파일이 나오므로, 저장 경로는 반드시 이걸 거친다.
+ */
+export function imagesReady(): Promise<void> {
+  return (hydration ?? Promise.resolve(0)).then(() => undefined);
+}
+
 /** 시작 시 저장된 이미지를 메모리로 복원한다. */
-export async function hydrateImages(): Promise<number> {
+export function hydrateImages(): Promise<number> {
+  if (!hydration) hydration = doHydrate();
+  return hydration;
+}
+
+async function doHydrate(): Promise<number> {
   const conn = await db();
   if (!conn) return 0;
   return new Promise((resolve) => {

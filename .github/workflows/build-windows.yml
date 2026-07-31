@@ -2,6 +2,7 @@ name: Windows 빌드
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     tags:
       - "v*"
@@ -10,8 +11,27 @@ on:
     branches:
       - "claude/**"
 
+# 연속 푸시 두 개가 같은 릴리스 태그를 동시에 만지지 않도록 직렬화한다
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # PR 검증: 타입체크 + 웹 빌드만 (Windows 러너 소모 없이)
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
   build:
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
 
     # 릴리스 생성·첨부에 필요

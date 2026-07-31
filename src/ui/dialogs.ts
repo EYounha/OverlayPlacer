@@ -3,6 +3,7 @@ import { ARTBOARD_PRESETS, PRESET_GROUPS } from "../presets";
 import { addArtboard } from "../actions";
 import { AI_GUIDE_MARKDOWN } from "../aiGuide";
 import { toast } from "./toast";
+import { writeClipboardText } from "../platform";
 
 function openModal(title: string, body: HTMLElement, footer?: HTMLElement): HTMLElement {
   const overlay = h("div", { class: "modal-overlay" });
@@ -156,9 +157,9 @@ export function aiGuideDialog(): void {
     h("button", {
       class: "btn btn-primary",
       onclick: () => {
-        void navigator.clipboard.writeText(AI_GUIDE_MARKDOWN)
-          .then(() => toast("AI 연동 가이드가 클립보드에 복사되었습니다"))
-          .catch(() => toast("클립보드 접근이 거부되었습니다"));
+        void writeClipboardText(AI_GUIDE_MARKDOWN).then((ok) =>
+          toast(ok ? "AI 연동 가이드가 클립보드에 복사되었습니다" : "클립보드 접근이 거부되었습니다")
+        );
       }
     }, "클립보드에 복사")
   );

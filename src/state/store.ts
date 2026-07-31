@@ -1,9 +1,9 @@
 import type { OPElement, ProjectDoc, Tool, ElementType } from "../types";
 import {
-  buildElementIndex, cloneDoc, collectImageKeys, createProject, findArtboard,
+  buildElementIndex, collectImageKeys, createProject, findArtboard,
   findElement, parseProject, serializeAutosave
 } from "../model/doc";
-import { pruneImages } from "./imageStore";
+import { imagePersistFailed, pruneImages } from "./imageStore";
 
 export type StoreEvent =
   | "doc" | "selection" | "view" | "tool" | "settings" | "transient" | "persist";
@@ -65,6 +65,8 @@ export class Store {
   private autosaveTimer: number | null = null;
   /** cancelChange가 되돌릴 수 있도록 beginChange가 비운 redo 스택을 보관 */
   private redoBeforeChange: HistoryEntry[] = [];
+  /** beginChange와 commit/cancelChange의 짝을 검사하기 위한 표식 */
+  private changeOpen = false;
 
   constructor() {
     this.doc = this.restoreAutosave() ?? createProject();
@@ -101,10 +103,12 @@ export class Store {
     if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
     this.redoBeforeChange = this.redoStack;
     this.redoStack = [];
+    this.changeOpen = true;
   }
 
   /** 변경 완료 — 갱신 통지 + 자동 저장 */
   commit(): void {
+    this.changeOpen = false;
     this.dirty = true;
     this.emit("doc", "selection");
     this.scheduleAutosave();
@@ -113,8 +117,11 @@ export class Store {
   /**
    * 시작한 변경을 되돌린다. beginChange가 비운 redo 스택까지 복구하므로
    * 취소된 작업 때문에 다시 실행 이력이 사라지지 않는다.
+   * beginChange 없이 불리면 무관한 undo 항목을 되돌리게 되므로 무시한다.
    */
   cancelChange(): void {
+    if (!this.changeOpen) return;
+    this.changeOpen = false;
     const entry = this.undoStack.pop();
     this.redoStack = this.redoBeforeChange;
     this.redoBeforeChange = [];
@@ -188,19 +195,7 @@ export class Store {
 
   /** 선택 중 조상이 이미 선택된 요소를 제외한 최상위 집합 */
   topLevelSelection(): string[] {
-    if (this.selection.length === 0) return [];
-    const set = new Set(this.selection);
-    // 색인을 한 번만 만든다. 요소마다 트리를 걷으면 선택이 커질수록
-    // 제곱으로 느려진다.
-    const index = buildElementIndex(this.doc);
-    return this.selection.filter((id) => {
-      let p = index.get(id)?.parentId ?? null;
-      while (p) {
-        if (set.has(p)) return false;
-        p = index.get(p)?.parentId ?? null;
-      }
-      return true;
-    });
+    return this.filteredSelection(() => true);
   }
 
   /**
@@ -208,12 +203,24 @@ export class Store {
    * 이동·삭제·정렬·순서 변경 등 요소를 바꾸는 동작은 모두 이것을 써야 한다.
    */
   editableSelection(): string[] {
-    const top = this.topLevelSelection();
-    if (top.length === 0) return [];
+    return this.filteredSelection((el) => !el.locked);
+  }
+
+  private filteredSelection(keep: (el: OPElement) => boolean): string[] {
+    if (this.selection.length === 0) return [];
+    const set = new Set(this.selection);
+    // 색인을 한 번만 만든다. 요소마다 트리를 걷으면 선택이 커질수록
+    // 제곱으로 느려진다.
     const index = buildElementIndex(this.doc);
-    return top.filter((id) => {
+    return this.selection.filter((id) => {
       const entry = index.get(id);
-      return !!entry && !entry.el.locked;
+      if (!entry || !keep(entry.el)) return false;
+      let p = entry.parentId;
+      while (p) {
+        if (set.has(p)) return false;
+        p = index.get(p)?.parentId ?? null;
+      }
+      return true;
     });
   }
 
@@ -287,7 +294,11 @@ export class Store {
     // 히스토리가 비어 있는 시작 시점(pruneStaleImages)에만 정리한다.
     try {
       localStorage.setItem(AUTOSAVE_KEY, serializeAutosave(this.doc));
-      this.setPersistState({ kind: "saved" });
+      if (imagePersistFailed()) {
+        this.setPersistState({ kind: "failed", reason: "이미지 저장 실패" });
+      } else {
+        this.setPersistState({ kind: "saved" });
+      }
     } catch (e) {
       const quota = e instanceof DOMException &&
         (e.name === "QuotaExceededError" || e.name === "NS_ERROR_DOM_QUOTA_REACHED");
@@ -342,6 +353,3 @@ export class Store {
 
 export const store = new Store();
 
-export function docClone(): ProjectDoc {
-  return cloneDoc(store.doc);
-}

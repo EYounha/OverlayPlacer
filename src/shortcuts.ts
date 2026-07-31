@@ -147,7 +147,8 @@ export function initShortcuts(canvas: CanvasView): void {
   window.addEventListener("beforeunload", (e) => {
     // 디바운스 대기 중인 자동저장을 흘려보내 마지막 편집을 잃지 않도록 한다
     store.flushAutosave();
-    if (store.dirty) {
+    // 자동저장이 정상이면 닫아도 잃는 것이 없다 — 실패 상태일 때만 경고한다
+    if (store.persistState.kind === "failed") {
       e.preventDefault();
     }
   });

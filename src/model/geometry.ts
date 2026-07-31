@@ -206,14 +206,6 @@ export function rectsIntersect(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-export function rectContains(a: Rect, b: Rect): boolean {
-  return b.x >= a.x && b.y >= a.y && b.x + b.w <= a.x + a.w && b.y + b.h <= a.y + a.h;
-}
-
-export function pointInRect(p: Point, r: Rect): boolean {
-  return p.x >= r.x && p.y >= r.y && p.x <= r.x + r.w && p.y <= r.y + r.h;
-}
-
 /** 월드 좌표가 요소 내부인지 (회전 반영) */
 export function pointInElement(info: WorldInfo, p: Point): boolean {
   const local = applyMat(matInvert(info.matrix), p);

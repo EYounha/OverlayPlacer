@@ -62,7 +62,7 @@ type DragState =
   | { mode: "artboard"; id: string; startWorld: Point; initPos: Point; mutated: boolean }
   | {
       mode: "guide"; artboardId: string; axis: "v" | "h"; index: number;
-      isNew: boolean; mutated: boolean;
+      mutated: boolean;
     };
 
 interface SnapLine {
@@ -88,7 +88,17 @@ export class CanvasView {
   private snapLines: SnapLine[] = [];
   /** 드래그 시작 시 한 번 모으는 스냅 대상 좌표 */
   private snapTargets: { xs: number[]; ys: number[] } | null = null;
+  /**
+   * 월드 변환 캐시. 호버 히트테스트가 pointermove마다 도는 가장 뜨거운
+   * 경로이므로, 문서가 바뀔 때만 무효화하고 그 사이에는 재사용한다.
+   */
+  private worldCache: Map<string, WorldEntry> | null = null;
   private lastPointer: Point = { x: 0, y: 0 };
+
+  private worldMap(): Map<string, WorldEntry> {
+    if (!this.worldCache) this.worldCache = buildWorldMap(store.doc);
+    return this.worldCache;
+  }
 
   constructor() {
     this.world = h("div", { class: "world" });
@@ -107,8 +117,8 @@ export class CanvasView {
     );
 
     this.bindEvents();
-    store.on("doc", () => { this.syncWorld(); this.renderOverlay(); });
-    store.on("transient", () => { this.syncWorld(); this.renderOverlay(); });
+    store.on("doc", () => { this.worldCache = null; this.syncWorld(); this.renderOverlay(); });
+    store.on("transient", () => { this.worldCache = null; this.syncWorld(); this.renderOverlay(); });
     store.on("view", () => { this.applyViewTransform(); this.renderOverlay(); this.syncLabels(); });
     store.on("selection", () => { this.renderOverlay(); this.syncLabels(); });
     store.on("settings", () => { this.syncWorld(); this.renderOverlay(); });
@@ -334,7 +344,7 @@ export class CanvasView {
     clearChildren(this.decorLayer);
     const frag = document.createDocumentFragment();
     // 선택이 클 때 요소마다 조상 체인을 다시 걷지 않도록 한 번만 계산한다
-    const world = buildWorldMap(store.doc);
+    const world = this.worldMap();
 
     // 호버 표시
     if (this.hoverId && !store.selection.includes(this.hoverId) && !this.drag) {
@@ -464,7 +474,7 @@ export class CanvasView {
   }
 
   private selectionWorldAABB(world?: Map<string, WorldEntry>): Rect | null {
-    const map = world ?? buildWorldMap(store.doc);
+    const map = world ?? this.worldMap();
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const id of store.selection) {
       const info = map.get(id);
@@ -538,6 +548,13 @@ export class CanvasView {
     this.viewport.addEventListener("pointerdown", (e) => this.onPointerDown(e));
     window.addEventListener("pointermove", (e) => this.onPointerMove(e));
     window.addEventListener("pointerup", (e) => this.onPointerUp(e));
+    // 터치 중단·브라우저 제스처로 up 없이 끝나면 드래그 상태가 영구히 남는다
+    window.addEventListener("pointercancel", () => this.onPointerCancel());
+    window.addEventListener("blur", () => {
+      this.spaceHeld = false;
+      this.updateCursor();
+      this.onPointerCancel();
+    });
     this.viewport.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
     this.viewport.addEventListener("contextmenu", (e) => this.onContextMenu(e));
     this.viewport.addEventListener("dblclick", (e) => this.onDblClick(e));
@@ -663,7 +680,7 @@ export class CanvasView {
     // 가이드 잡기
     const guideHit = this.hitGuide(world);
     if (guideHit && store.settings.showGuides) {
-      this.drag = { ...guideHit, mode: "guide", isNew: false, mutated: false };
+      this.drag = { ...guideHit, mode: "guide", mutated: false };
       this.viewport.setPointerCapture(e.pointerId);
       return;
     }
@@ -754,7 +771,9 @@ export class CanvasView {
       case "move": {
         let dx = world.x - d.startWorld.x;
         let dy = world.y - d.startWorld.y;
-        if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && !d.mutated) return;
+        // 임계값은 화면 픽셀 기준 — 월드 단위로 두면 줌에 따라 감도가 달라진다
+        const moveThreshold = 1.5 / store.view.zoom;
+        if (Math.abs(dx) < moveThreshold && Math.abs(dy) < moveThreshold && !d.mutated) return;
         if (!d.mutated) {
           store.beginChange();
           d.mutated = true;
@@ -876,6 +895,34 @@ export class CanvasView {
     }
   }
 
+  /**
+   * up 없이 끝난 드래그 정리. 이미 문서를 손댔다면(beginChange 이후)
+   * 그 상태로 확정한다 — 버리면 히스토리에 짝 잃은 스냅샷이 남는다.
+   */
+  private onPointerCancel(): void {
+    const d = this.drag;
+    if (!d) return;
+    this.drag = null;
+    this.snapLines = [];
+    this.snapTargets = null;
+    this.updateCursor();
+    switch (d.mode) {
+      case "move":
+      case "resize":
+      case "rotate":
+      case "artboard":
+      case "guide":
+        if (d.mutated) store.commit();
+        break;
+      case "draw":
+        if (d.mutated) store.commit();
+        store.setTool("select");
+        break;
+      default:
+        this.renderOverlay();
+    }
+  }
+
   private onPointerUp(e: PointerEvent): void {
     const d = this.drag;
     if (!d) return;
@@ -927,12 +974,9 @@ export class CanvasView {
           const arr = d.axis === "v" ? ab.guides.v : ab.guides.h;
           const val = arr[d.index];
           const max = d.axis === "v" ? ab.width : ab.height;
+          // 아트보드 밖으로 끌어내면 삭제
           if (val < 0 || val > max) arr.splice(d.index, 1);
           store.commit();
-        } else if (ab && d.isNew) {
-          const arr = d.axis === "v" ? ab.guides.v : ab.guides.h;
-          arr.splice(d.index, 1);
-          store.cancelChange();
         }
         break;
       }
@@ -994,9 +1038,8 @@ export class CanvasView {
   }
 
   private hitElement(world: Point): { id: string; artboardId: string } | null {
-    // 요소마다 조상 체인을 다시 걷지 않도록 한 번만 계산한다.
-    // 호버는 pointermove마다 돌기 때문에 여기가 가장 뜨거운 경로다.
-    const map = buildWorldMap(store.doc);
+    // 문서가 안 바뀌었으면 캐시를 재사용한다 — 호버가 가장 뜨거운 경로다
+    const map = this.worldMap();
     for (let i = store.doc.artboards.length - 1; i >= 0; i--) {
       const ab = store.doc.artboards[i];
       const hit = this.hitIn(ab.children, world, map);
@@ -1059,7 +1102,7 @@ export class CanvasView {
       for (const gh of ab.guides.h) ys.push(abr.y + gh);
     }
     if (store.settings.snapElements) {
-      const map = buildWorldMap(store.doc);
+      const map = this.worldMap();
       for (const el of ab.children) {
         if (excluded.has(el.id) || !el.visible) continue;
         const info = map.get(el.id);
@@ -1275,7 +1318,7 @@ export class CanvasView {
       h: Math.abs(cur.y - d.startWorld.y)
     };
     const ids: string[] = [...d.base];
-    const map = buildWorldMap(store.doc);
+    const map = this.worldMap();
     for (const ab of store.doc.artboards) {
       for (const el of ab.children) {
         if (!el.visible || el.locked) continue;

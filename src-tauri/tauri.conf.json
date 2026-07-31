@@ -18,16 +18,17 @@
         "minWidth": 900,
         "minHeight": 600,
         "theme": "Dark",
-        "backgroundColor": "#101014"
+        "backgroundColor": "#2b2b2b",
+        "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {
-    "active": true,
-    "targets": ["msi", "nsis"],
+    "active": false,
+    "targets": [],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

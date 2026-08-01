@@ -1,4 +1,4 @@
-import { h } from "./dom";
+import { h, icon } from "./dom";
 import { ARTBOARD_PRESETS, PRESET_GROUPS } from "../presets";
 import { addArtboard } from "../actions";
 import { AI_GUIDE_MARKDOWN } from "../aiGuide";
@@ -14,7 +14,7 @@ function openModal(title: string, body: HTMLElement, footer?: HTMLElement): HTML
       "div",
       { class: "modal-header" },
       h("span", {}, title),
-      h("button", { class: "modal-close", onclick: () => overlay.remove() }, "✕")
+      h("button", { class: "modal-close", onclick: () => overlay.remove() }, icon("close", 14))
     ),
     h("div", { class: "modal-body" }, body),
     footer ? h("div", { class: "modal-footer" }, footer) : null
@@ -118,6 +118,7 @@ export function shortcutsDialog(): void {
     ["W · V", "선택 도구"],
     ["Q · H · Space 유지", "손 도구 (이동)"],
     ["R", "요소 그리기 도구"],
+    ["M", "치수선 도구"],
     ["F", "선택 프레임"],
     ["휠", "확대 / 축소 (커서 기준)"],
     ["휠 클릭 드래그", "화면 이동"],
@@ -126,6 +127,8 @@ export function shortcutsDialog(): void {
     ["Ctrl+D", "복제"],
     ["Delete", "삭제"],
     ["Ctrl+A", "전체 선택"],
+    ["Ctrl+클릭", "다중 선택 (하나씩 더하기)"],
+    ["Shift+클릭 (계층)", "이어진 범위 선택"],
     ["Ctrl+G / Ctrl+Shift+G", "그룹 / 그룹 해제"],
     ["Ctrl+] / Ctrl+[", "앞으로 / 뒤로 보내기"],
     ["Ctrl+Shift+] / Ctrl+Shift+[", "맨 앞 / 맨 뒤로"],

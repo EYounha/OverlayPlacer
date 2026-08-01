@@ -23,9 +23,13 @@ export interface ViewState {
 export interface EditorSettings {
   showGrid: boolean;
   showGuides: boolean;
+  showMeasures: boolean;
+  showLabels: boolean;
   snapGrid: boolean;
   snapElements: boolean;
   snapGuides: boolean;
+  /** 이웃과 같은 간격·중앙 간격에 맞물리는 스냅 */
+  snapGaps: boolean;
   gridSize: number;
 }
 
@@ -51,9 +55,12 @@ export class Store {
   settings: EditorSettings = {
     showGrid: false,
     showGuides: true,
+    showMeasures: true,
+    showLabels: true,
     snapGrid: false,
     snapElements: true,
     snapGuides: true,
+    snapGaps: true,
     gridSize: 8
   };
   dirty = false;

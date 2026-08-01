@@ -1,9 +1,9 @@
 import { store } from "../state/store";
 import {
-  copyAIToClipboard, copySelection, cutSelection, deleteSelection,
+  clearMeasures, copyAIToClipboard, copySelection, cutSelection, deleteSelection,
   duplicateSelection, exportAIFile, groupSelection, importFromClipboard,
-  openProjectFile, paste, saveProjectFile, selectAll, toggleLocked,
-  toggleVisible, ungroupSelection
+  measureSelection, openProjectFile, paste, saveProjectFile, selectAll,
+  toggleLocked, toggleVisible, ungroupSelection
 } from "../actions";
 import { h } from "./dom";
 import { showMenu, closeMenus, type MenuItem } from "./contextmenu";
@@ -94,10 +94,14 @@ export class MenuBar {
       { separator: true },
       { label: "격자", shortcut: "Ctrl+'", checked: s.showGrid, action: () => store.updateSettings({ showGrid: !s.showGrid }) },
       { label: "가이드", checked: s.showGuides, action: () => store.updateSettings({ showGuides: !s.showGuides }) },
+      { label: "치수선", checked: s.showMeasures, action: () => store.updateSettings({ showMeasures: !s.showMeasures }) },
+      { label: "요소 이름표", checked: s.showLabels, action: () => store.updateSettings({ showLabels: !s.showLabels }) },
+      { separator: true },
       { label: "세로 가이드 추가", action: () => this.canvas.addGuide("v") },
       { label: "가로 가이드 추가", action: () => this.canvas.addGuide("h") },
       { separator: true },
       { label: "요소에 스냅", checked: s.snapElements, action: () => store.updateSettings({ snapElements: !s.snapElements }) },
+      { label: "간격에 스냅", checked: s.snapGaps, action: () => store.updateSettings({ snapGaps: !s.snapGaps }) },
       { label: "가이드에 스냅", checked: s.snapGuides, action: () => store.updateSettings({ snapGuides: !s.snapGuides }) },
       { label: "격자에 스냅", checked: s.snapGrid, action: () => store.updateSettings({ snapGrid: !s.snapGrid }) }
     ];
@@ -116,6 +120,13 @@ export class MenuBar {
       { separator: true },
       { label: "순서", children: buildOrderMenu() },
       { label: "정렬", children: buildAlignMenu() },
+      { separator: true },
+      { label: "치수선 추가", disabled: store.selection.length !== 2, action: measureSelection },
+      {
+        label: "치수선 모두 지우기",
+        disabled: store.activeArtboard().measures.length === 0,
+        action: clearMeasures
+      },
       { separator: true },
       { label: els.length > 0 && els.every((e) => !e.visible) ? "표시" : "숨기기", disabled: !hasSel, action: toggleVisible },
       { label: els.length > 0 && els.every((e) => e.locked) ? "잠금 해제" : "잠금", disabled: !hasSel, action: toggleLocked }

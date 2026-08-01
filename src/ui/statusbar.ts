@@ -1,5 +1,5 @@
 import { store } from "../state/store";
-import { h } from "./dom";
+import { h, icon } from "./dom";
 import type { CanvasView } from "./canvasView";
 
 export class StatusBar {
@@ -26,10 +26,23 @@ export class StatusBar {
       this.selInfo,
       h("div", { class: "menubar-spacer" }),
       this.persist,
-      h("button", { class: "status-btn", title: "축소", onclick: () => this.canvas.setZoom(store.view.zoom / 1.25) }, "−"),
+      h("button", {
+        class: "status-btn", title: "축소",
+        onclick: () => this.canvas.setZoom(store.view.zoom / 1.25)
+      }, icon("zoomOut", 15)),
       this.zoomLabel,
-      h("button", { class: "status-btn", title: "확대", onclick: () => this.canvas.setZoom(store.view.zoom * 1.25) }, "+"),
-      h("button", { class: "status-btn wide", title: "화면에 맞추기 (Ctrl+0)", onclick: () => this.canvas.fitToView() }, "⤢")
+      h("button", {
+        class: "status-btn", title: "확대",
+        onclick: () => this.canvas.setZoom(store.view.zoom * 1.25)
+      }, icon("zoomIn", 15)),
+      h("button", {
+        class: "status-btn", title: "선택 프레임 (F)",
+        onclick: () => this.canvas.frameSelection()
+      }, icon("frame", 14)),
+      h("button", {
+        class: "status-btn", title: "화면에 맞추기 (Ctrl+0)",
+        onclick: () => this.canvas.fitToView()
+      }, icon("fitScreen", 15))
     );
 
     window.addEventListener("op:cursor", ((e: CustomEvent) => {

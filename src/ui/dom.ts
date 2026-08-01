@@ -1,3 +1,5 @@
+import { ICONS, ICON_VIEWBOX, type IconName } from "./icons";
+
 type Child = Node | string | null | undefined | false;
 
 export function h<K extends keyof HTMLElementTagNameMap>(
@@ -46,4 +48,18 @@ export function svgEl<K extends keyof SVGElementTagNameMap>(
 
 export function clearChildren(el: HTMLElement | SVGElement): void {
   while (el.firstChild) el.removeChild(el.firstChild);
+}
+
+/** Material Symbols 아이콘 (currentColor로 칠해진다) */
+export function icon(name: IconName, size = 18): SVGSVGElement {
+  const svg = svgEl("svg", {
+    viewBox: ICON_VIEWBOX,
+    width: size,
+    height: size,
+    fill: "currentColor",
+    class: "icon",
+    "aria-hidden": "true"
+  });
+  svg.append(svgEl("path", { d: ICONS[name] }));
+  return svg;
 }

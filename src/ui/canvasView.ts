@@ -1,5 +1,5 @@
 import { store } from "../state/store";
-import type { Artboard, OPElement, Point, Rect } from "../types";
+import type { Artboard, Measure, OPElement, Point, Rect } from "../types";
 import { typeInfo } from "../types";
 import { findArtboard, findElement, createElement, genId } from "../model/doc";
 import {
@@ -8,17 +8,26 @@ import {
   worldInfoOf, writeLocalRect, type WorldEntry,
   type Mat, type WorldInfo
 } from "../model/geometry";
+import { dominantAxis, measureGeom, type MeasureGeom } from "../model/measure";
 import { h, svgEl, clearChildren } from "./dom";
 import { showMenu } from "./contextmenu";
 import { buildElementContextMenu } from "./sharedMenus";
-import { importText } from "../actions";
+import { addMeasure, applyMeasure, deleteMeasure, flipMeasureTarget, importText } from "../actions";
+import { toast } from "./toast";
 import { getImage, registerImage } from "../state/imageStore";
 
-const SNAP_SCREEN_PX = 6;
+const SNAP_SCREEN_PX = 7;
 /** 화면 밖 여유 — 이 안에서 움직이는 동안은 DOM을 다시 만들지 않는다 */
 const CULL_MARGIN_PX = 600;
 const MIN_ZOOM = 0.02;
 const MAX_ZOOM = 32;
+/** 이름표 한 줄 높이 (화면 px) — 겹칠 때 이만큼씩 내려 자리를 만든다 */
+const LABEL_LANE_PX = 14;
+/** 이름표를 밀어 내릴 수 있는 최대 줄 수. 넘으면 감춘다 */
+const LABEL_MAX_LANES = 6;
+/** 이 크기보다 작게 보이는 요소는 이름표를 그리지 않는다 (화면 px) */
+const LABEL_MIN_W = 26;
+const LABEL_MIN_H = 11;
 
 type Handle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
@@ -28,6 +37,22 @@ interface ArtboardNode {
   grid: HTMLElement;
   content: HTMLElement;
   guides: HTMLElement;
+}
+
+/**
+ * 요소 하나에 대응하는 DOM과 마지막으로 적용한 값.
+ *
+ * DOM을 되읽는 것만으로도 요소 수만큼 비용이 붙으므로, 라벨의 글자·색·
+ * 표시 여부·줄 위치는 여기에 기억해 두고 달라질 때만 손댄다.
+ */
+interface ElNode {
+  node: HTMLElement;
+  label: HTMLElement;
+  /** 마지막으로 적용한 top (줄 내림) */
+  top: string;
+  hidden: boolean;
+  text: string;
+  color: string;
 }
 
 /** 값이 실제로 달라질 때만 쓴다 — 불필요한 스타일 재계산을 막는다 */
@@ -72,6 +97,34 @@ interface SnapLine {
   world: number;
 }
 
+/** 드래그 중 맞물린 간격을 보여 주는 임시 치수 표시 */
+interface GapHint {
+  axis: "h" | "v";
+  a: Point;
+  b: Point;
+  value: number;
+}
+
+/** 스냅 대상 사전 계산 결과 */
+interface SnapTargets {
+  xs: number[];
+  ys: number[];
+  /** 같은 크기에 맞추기 위한 정지 요소들의 폭·높이 */
+  ws: number[];
+  hs: number[];
+  /** 간격 스냅용 정지 요소 경계 */
+  rects: Rect[];
+}
+
+/** 화면 좌표로 계산해 둔 치수선 — 숫자 클릭 편집에 쓴다 */
+interface MeasureHit {
+  artboardId: string;
+  measure: Measure;
+  geom: MeasureGeom;
+  /** 숫자 라벨의 화면 사각형 */
+  rect: Rect;
+}
+
 export class CanvasView {
   root: HTMLElement;
   private viewport: HTMLElement;
@@ -82,14 +135,25 @@ export class CanvasView {
   /** 핸들·배지·스냅선·마퀴 등 매번 새로 그리는 레이어 */
   private decorLayer: SVGGElement;
   private labelLayer: HTMLElement;
-  private nodeMap = new Map<string, HTMLElement>();
+  private nodeMap = new Map<string, ElNode>();
   private abNodes = new Map<string, ArtboardNode>();
   private drag: DragState | null = null;
   private hoverId: string | null = null;
   private spaceHeld = false;
   private snapLines: SnapLine[] = [];
+  /** 드래그 중 맞물린 간격 표시 */
+  private gapHints: GapHint[] = [];
   /** 드래그 시작 시 한 번 모으는 스냅 대상 좌표 */
-  private snapTargets: { xs: number[]; ys: number[] } | null = null;
+  private snapTargets: SnapTargets | null = null;
+  /** 치수선 도구로 고른 첫 번째 요소 */
+  private measureFrom: string | null = null;
+  /** 이번 프레임에 그린 치수선의 화면 위치 (숫자 클릭 판정용) */
+  private measureHits: MeasureHit[] = [];
+  private measureEditor: HTMLInputElement | null = null;
+  /** 이름표 재배치는 배율이 바뀔 때만 다시 한다 */
+  private labelZoom = 0;
+  /** 이번 syncWorld에서 노드를 새로 만들었는지 (이름표 배치 필요 여부) */
+  private createdNodes = false;
   /**
    * 월드 변환 캐시. 호버 히트테스트가 pointermove마다 도는 가장 뜨거운
    * 경로이므로, 문서가 바뀔 때만 무효화하고 그 사이에는 재사용한다.
@@ -133,12 +197,18 @@ export class CanvasView {
       this.markInteracting();
       // 여유 영역을 벗어났을 때만 DOM을 다시 만든다
       if (this.needsRecull()) this.syncWorld();
+      // 이름표 크기는 화면 기준이므로 배율이 바뀌면 겹침이 달라진다.
+      // 이동만으로는 서로의 관계가 그대로라 다시 계산할 필요가 없다.
+      else if (store.view.zoom !== this.labelZoom) this.layoutLabels();
       this.renderOverlay();
       this.syncLabels();
     });
     store.on("selection", () => { this.renderOverlay(); this.syncLabels(); });
     store.on("settings", () => { this.syncWorld(); this.renderOverlay(); });
-    store.on("tool", () => this.updateCursor());
+    store.on("tool", () => {
+      this.updateCursor();
+      if (store.tool !== "measure") this.cancelMeasure();
+    });
 
     new ResizeObserver(() => { this.renderOverlay(); this.syncLabels(); }).observe(this.viewport);
   }
@@ -248,6 +318,11 @@ export class CanvasView {
       }
     }
     this.applyViewTransform();
+    // 드래그 중에는 건너뛴다 — 프레임마다 다시 배치하면 그만큼 무거워지고,
+    // 손을 뗀 뒤 한 번만 맞춰도 결과는 같다. 다만 화면에 새로 들어온 노드는
+    // 자리를 배정받은 적이 없으므로 그때는 미루지 않는다.
+    if (!this.drag || this.createdNodes) this.layoutLabels();
+    this.createdNodes = false;
     this.syncLabels();
   }
 
@@ -330,12 +405,15 @@ export class CanvasView {
       const entry = world.get(el.id);
       if (entry && !rectsIntersect(cull, entry.subtreeAABB)) continue;
       rendered.add(el.id);
-      let node = this.nodeMap.get(el.id);
-      if (!node) {
-        node = h("div", { class: "op-el", dataset: { id: el.id } },
-          h("div", { class: "el-label" }));
-        this.nodeMap.set(el.id, node);
+      let rec = this.nodeMap.get(el.id);
+      if (!rec) {
+        const label = h("div", { class: "el-label" });
+        const node = h("div", { class: "op-el", dataset: { id: el.id } }, label);
+        rec = { node, label, top: "", hidden: false, text: "", color: "" };
+        this.nodeMap.set(el.id, rec);
+        this.createdNodes = true;
       }
+      const node = rec.node;
       // 재귀 중 커서가 가리키던 노드가 다른 부모로 옮겨졌을 수 있다
       if (cursor && cursor.parentElement !== container) cursor = null;
       if (node !== cursor) {
@@ -343,12 +421,9 @@ export class CanvasView {
       } else {
         cursor = cursor.nextElementSibling;
       }
-      const r = this.applyElementStyle(node, el, pw, ph);
+      const r = this.applyElementStyle(rec, el, pw, ph);
       // 첫 자식은 라벨이므로 그 다음부터 자식 요소를 배치한다
-      this.syncElements(
-        node, el.children, r.w, r.h,
-        node.firstElementChild?.nextElementSibling ?? null, cull, world
-      );
+      this.syncElements(node, el.children, r.w, r.h, rec.label.nextElementSibling, cull, world);
     }
     // 문서에서 사라진 노드만 걷어낸다.
     // 커서를 따라가며 지우면, 재귀 중 다른 부모로 옮겨진 노드까지
@@ -373,7 +448,8 @@ export class CanvasView {
     }
   }
 
-  private applyElementStyle(node: HTMLElement, el: OPElement, pw: number, ph: number): Rect {
+  private applyElementStyle(rec: ElNode, el: OPElement, pw: number, ph: number): Rect {
+    const node = rec.node;
     const r = localRectOf(el, pw, ph);
     setStyle(node, "left", `${r.x}px`);
     setStyle(node, "top", `${r.y}px`);
@@ -387,13 +463,73 @@ export class CanvasView {
       node.style.setProperty("--el-color", el.color);
     }
     setStyle(node, "background", hexWithAlpha(el.color, 0.14));
-    const label = node.firstElementChild as HTMLElement | null;
-    if (label && label.classList.contains("el-label")) {
-      const text = el.name || typeInfo(el.type).label;
-      if (label.textContent !== text) label.textContent = text;
-      setStyle(label, "color", el.color);
+    // 라벨의 글자·색은 마지막으로 적은 값을 기억해 두고 달라질 때만 손댄다.
+    // DOM을 되읽는 것만으로도 요소 수만큼 비용이 붙는다.
+    const text = el.name || typeInfo(el.type).label;
+    if (rec.text !== text) {
+      rec.label.textContent = text;
+      rec.text = text;
+    }
+    if (rec.color !== el.color) {
+      rec.label.style.color = el.color;
+      rec.color = el.color;
     }
     return r;
+  }
+
+  /**
+   * 요소 이름표가 서로 가리지 않도록 자리를 잡는다.
+   *
+   * 겹친 요소는 이름표도 같은 자리에 포개져 아무것도 읽을 수 없다.
+   * 화면 기준으로 위에서 아래로 훑으며 이미 놓인 이름표와 부딪히면 한 줄씩
+   * 내리고, 더 내릴 자리가 없으면 감춘다. 너무 작게 보이는 요소도 감춘다.
+   */
+  private layoutLabels(): void {
+    const { zoom, panX, panY } = store.view;
+    this.labelZoom = zoom;
+    const show = store.settings.showLabels;
+    const world = this.worldMap();
+    const items: { rec: ElNode; box: LabelBox }[] = [];
+
+    for (const [id, rec] of this.nodeMap) {
+      const entry = world.get(id);
+      if (!show || !entry || !entry.el.visible ||
+        // 이름표가 요소보다 커 보이면 읽히지도 않고 옆 요소만 가린다
+        entry.aabb.w * zoom < LABEL_MIN_W || entry.aabb.h * zoom < LABEL_MIN_H) {
+        hideLabel(rec);
+        continue;
+      }
+      // 라벨은 요소 로컬 원점에 붙으므로 행렬의 평행이동 성분이 곧 그 위치다
+      items.push({
+        rec,
+        box: {
+          x: entry.matrix[4] * zoom + panX,
+          y: entry.matrix[5] * zoom + panY,
+          w: Math.min(entry.aabb.w * zoom, textWidthPx(rec.text))
+        }
+      });
+    }
+
+    // 활성 목록에는 아직 세로로 겹칠 수 있는 것만 남겨 비교 횟수를 줄인다
+    items.sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x);
+    const active: LabelBox[] = [];
+    for (const { rec, box } of items) {
+      const cutoff = box.y - LABEL_LANE_PX * (LABEL_MAX_LANES + 1);
+      while (active.length > 0 && active[0].y < cutoff) active.shift();
+      let lane = 0;
+      while (lane < LABEL_MAX_LANES) {
+        const y = box.y + lane * LABEL_LANE_PX;
+        if (!active.some((p) => labelsOverlap(p, box.x, y, box.w))) break;
+        lane++;
+      }
+      if (lane >= LABEL_MAX_LANES) {
+        hideLabel(rec);
+        continue;
+      }
+      active.push({ x: box.x, y: box.y + lane * LABEL_LANE_PX, w: box.w });
+      // 라벨은 요소 좌표계에 놓이므로 화면 오프셋을 배율로 되돌려 넣는다
+      showLabel(rec, lane === 0 ? "0px" : `${(lane * LABEL_LANE_PX) / zoom}px`);
+    }
   }
 
   private syncLabels(): void {
@@ -481,6 +617,18 @@ export class CanvasView {
       }
     }
 
+    // 치수선 — 저장된 것과 드래그 중 임시 표시
+    this.renderMeasures(frag, world);
+    for (const hint of this.gapHints) {
+      this.appendMeasureLine(frag, hint.axis, hint.a, hint.b, fmt(hint.value), "op-gap");
+    }
+
+    // 치수선 도구로 고른 첫 요소 표시
+    if (this.measureFrom) {
+      const info = world.get(this.measureFrom);
+      if (info) frag.append(this.outlinePolygon(info, "op-measure-pick"));
+    }
+
     // 마퀴
     if (this.drag?.mode === "marquee") {
       const a = this.worldToScreen(this.drag.startWorld);
@@ -544,6 +692,59 @@ export class CanvasView {
     });
     text.textContent = `${fmt(info.localRect.w)} × ${fmt(info.localRect.h)}`;
     frag.append(text);
+  }
+
+  /* ---------- 치수선 그리기 ---------- */
+
+  private renderMeasures(frag: DocumentFragment, world: Map<string, WorldEntry>): void {
+    this.measureHits = [];
+    if (!store.settings.showMeasures) return;
+    const visible = this.visibleWorldRect(60);
+    for (const ab of store.doc.artboards) {
+      for (const m of ab.measures) {
+        const geom = measureGeom(ab, m, world);
+        if (!geom) continue;
+        if (!rectsIntersect(visible, lineBounds(geom.a, geom.b))) continue;
+        const rect = this.appendMeasureLine(
+          frag, geom.axis, geom.a, geom.b, fmt(geom.gap), "op-measure"
+        );
+        this.measureHits.push({ artboardId: ab.id, measure: m, geom, rect });
+      }
+    }
+  }
+
+  /** 치수선 한 줄을 그리고 숫자 칩의 화면 사각형을 돌려준다 */
+  private appendMeasureLine(
+    frag: DocumentFragment, axis: "h" | "v", aw: Point, bw: Point, text: string, cls: string
+  ): Rect {
+    const a = this.worldToScreen(aw);
+    const b = this.worldToScreen(bw);
+    frag.append(svgEl("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: `${cls}-line` }));
+    const tick = 4;
+    for (const p of [a, b]) {
+      frag.append(svgEl("line", {
+        x1: axis === "h" ? p.x : p.x - tick,
+        y1: axis === "h" ? p.y - tick : p.y,
+        x2: axis === "h" ? p.x : p.x + tick,
+        y2: axis === "h" ? p.y + tick : p.y,
+        class: `${cls}-tick`
+      }));
+    }
+    const w = textWidthPx(text) + 2;
+    const hh = 15;
+    // 가로 치수선은 숫자를 위로, 세로 치수선은 옆으로 비켜 놓는다
+    const cx = (a.x + b.x) / 2 + (axis === "h" ? 0 : w / 2 + 5);
+    const cy = (a.y + b.y) / 2 - (axis === "h" ? 9 : 0);
+    const rect: Rect = { x: cx - w / 2, y: cy - hh / 2, w, h: hh };
+    frag.append(svgEl("rect", {
+      x: rect.x, y: rect.y, width: rect.w, height: rect.h, rx: 2, class: `${cls}-chip`
+    }));
+    const label = svgEl("text", {
+      x: cx, y: cy + 4, class: `${cls}-text`, "text-anchor": "middle"
+    });
+    label.textContent = text;
+    frag.append(label);
+    return rect;
   }
 
   private handlePositions(info: WorldInfo): Record<Handle, Point> {
@@ -711,6 +912,20 @@ export class CanvasView {
       return;
     }
 
+    // 치수선 숫자를 찍으면 그 자리에서 값을 고친다
+    const measureHit = this.hitMeasure(screenLocal);
+    if (measureHit) {
+      e.preventDefault();
+      this.openMeasureEditor(measureHit);
+      return;
+    }
+
+    // 치수선 도구
+    if (store.tool === "measure") {
+      this.onMeasureClick(world);
+      return;
+    }
+
     // 그리기 도구
     if (store.tool === "draw") {
       const ab = this.artboardAt(world) ?? store.activeArtboard();
@@ -774,11 +989,12 @@ export class CanvasView {
       return;
     }
 
-    // 요소 히트 테스트
+    // 요소 히트 테스트. 다중 선택은 Ctrl — Shift는 이동 축 고정에 쓴다
+    const additive = e.ctrlKey || e.metaKey;
     const hit = this.hitElement(world);
     if (hit) {
       store.setActiveArtboard(hit.artboardId);
-      if (e.shiftKey) {
+      if (additive) {
         store.toggleSelect(hit.id);
         return;
       }
@@ -795,11 +1011,115 @@ export class CanvasView {
     this.drag = {
       mode: "marquee",
       startWorld: world,
-      additive: e.shiftKey,
-      base: e.shiftKey ? [...store.selection] : []
+      additive,
+      base: additive ? [...store.selection] : []
     };
-    if (!e.shiftKey) store.clearSelection();
+    if (!additive) store.clearSelection();
     this.viewport.setPointerCapture(e.pointerId);
+  }
+
+  /* ---------- 치수선 조작 ---------- */
+
+  private hitMeasure(screen: Point): MeasureHit | null {
+    if (!store.settings.showMeasures) return null;
+    for (const hit of this.measureHits) {
+      const r = hit.rect;
+      if (screen.x >= r.x && screen.x <= r.x + r.w && screen.y >= r.y && screen.y <= r.y + r.h) {
+        return hit;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 치수선 도구 클릭. 첫 번째 요소를 고른 뒤 두 번째 요소를 찍으면
+   * 둘 사이에, 빈 곳을 찍으면 가장 가까운 아트보드 가장자리까지 치수선을 만든다.
+   */
+  private onMeasureClick(world: Point): void {
+    const map = this.worldMap();
+    const hit = this.hitElement(world);
+    if (!this.measureFrom) {
+      if (!hit) return;
+      store.setActiveArtboard(hit.artboardId);
+      this.measureFrom = hit.id;
+      this.renderOverlay();
+      return;
+    }
+    const from = map.get(this.measureFrom);
+    const fromId = this.measureFrom;
+    this.measureFrom = null;
+    if (!from) { this.renderOverlay(); return; }
+
+    if (hit && hit.id !== fromId) {
+      const to = map.get(hit.id);
+      if (to && to.artboard.id === from.artboard.id) {
+        addMeasure(from.artboard.id, {
+          fromId, toId: hit.id, edge: "min",
+          axis: dominantAxis(from.aabb, to.aabb), moves: "to"
+        });
+      } else {
+        toast("같은 아트보드의 요소끼리만 잴 수 있습니다");
+      }
+    } else if (!hit) {
+      const bb = from.aabb;
+      const away = [
+        { d: bb.x - world.x, axis: "h" as const, edge: "min" as const },
+        { d: world.x - (bb.x + bb.w), axis: "h" as const, edge: "max" as const },
+        { d: bb.y - world.y, axis: "v" as const, edge: "min" as const },
+        { d: world.y - (bb.y + bb.h), axis: "v" as const, edge: "max" as const }
+      ].reduce((best, c) => (c.d > best.d ? c : best));
+      addMeasure(from.artboard.id, {
+        fromId, toId: null, edge: away.edge, axis: away.axis, moves: "from"
+      });
+    }
+    this.renderOverlay();
+  }
+
+  /** 치수선의 숫자를 그 자리에서 고친다 — 확정하면 지정한 쪽이 움직인다 */
+  private openMeasureEditor(hit: MeasureHit): void {
+    this.closeMeasureEditor();
+    const input = h("input", {
+      class: "measure-input",
+      type: "number",
+      value: String(hit.geom.gap),
+      style: {
+        left: `${Math.round(hit.rect.x + hit.rect.w / 2 - 30)}px`,
+        top: `${Math.round(hit.rect.y - 3)}px`
+      }
+    }) as HTMLInputElement;
+    this.measureEditor = input;
+    this.viewport.append(input);
+    input.focus({ preventScroll: true });
+    input.select();
+    let settled = false;
+    const finish = (commit: boolean) => {
+      if (settled) return;
+      settled = true;
+      const v = Number(input.value);
+      input.remove();
+      if (this.measureEditor === input) this.measureEditor = null;
+      if (commit && Number.isFinite(v)) applyMeasure(hit.artboardId, hit.measure.id, v);
+    };
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") input.blur();
+      if (ev.key === "Escape") finish(false);
+    });
+    input.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+  }
+
+  private closeMeasureEditor(): void {
+    this.measureEditor?.remove();
+    this.measureEditor = null;
+  }
+
+  /** 치수선 도구의 대기 상태를 푼다 (Esc·도구 전환) */
+  cancelMeasure(): boolean {
+    if (!this.measureFrom) return false;
+    this.measureFrom = null;
+    this.renderOverlay();
+    return true;
   }
 
   private beginMoveDrag(world: Point, pointerId: number): void {
@@ -993,6 +1313,7 @@ export class CanvasView {
     if (!d) return;
     this.drag = null;
     this.snapLines = [];
+    this.gapHints = [];
     this.snapTargets = null;
     this.updateCursor();
     switch (d.mode) {
@@ -1017,6 +1338,7 @@ export class CanvasView {
     if (!d) return;
     this.drag = null;
     this.snapLines = [];
+    this.gapHints = [];
     this.snapTargets = null;
     this.updateCursor();
 
@@ -1082,6 +1404,24 @@ export class CanvasView {
 
   private onContextMenu(e: MouseEvent): void {
     e.preventDefault();
+    const measureHit = this.hitMeasure(this.screenPoint(e));
+    if (measureHit) {
+      const { artboardId, measure } = measureHit;
+      showMenu([
+        {
+          label: "간격 수정…",
+          action: () => this.openMeasureEditor(measureHit)
+        },
+        {
+          label: "움직일 쪽 바꾸기",
+          disabled: measure.toId === null,
+          action: () => flipMeasureTarget(artboardId, measure.id)
+        },
+        { separator: true },
+        { label: "치수선 삭제", action: () => deleteMeasure(artboardId, measure.id) }
+      ], e.clientX, e.clientY);
+      return;
+    }
     const world = this.screenToWorld(e.clientX, e.clientY);
     const hit = this.hitElement(world);
     if (hit && !store.selection.includes(hit.id)) {
@@ -1180,11 +1520,15 @@ export class CanvasView {
    * 아트보드 경계·중앙, 가이드, 그리고 움직이지 않는 다른 요소의 경계·중앙.
    */
   private prepareSnapTargets(artboardId: string, excluded: Set<string>): void {
+    const empty: SnapTargets = { xs: [], ys: [], ws: [], hs: [], rects: [] };
     const ab = findArtboard(store.doc, artboardId);
-    if (!ab) { this.snapTargets = { xs: [], ys: [] }; return; }
+    if (!ab) { this.snapTargets = empty; return; }
     const abr = artboardWorldRect(ab);
     const xs = [abr.x, abr.x + abr.w / 2, abr.x + abr.w];
     const ys = [abr.y, abr.y + abr.h / 2, abr.y + abr.h];
+    const ws: number[] = [];
+    const hs: number[] = [];
+    const rects: Rect[] = [];
 
     if (store.settings.snapGuides && store.settings.showGuides) {
       for (const v of ab.guides.v) xs.push(abr.x + v);
@@ -1192,24 +1536,87 @@ export class CanvasView {
     }
     if (store.settings.snapElements) {
       const map = this.worldMap();
-      for (const el of ab.children) {
-        if (excluded.has(el.id) || !el.visible) continue;
-        const info = map.get(el.id);
-        if (!info) continue;
-        const bb = worldAABB(info);
-        xs.push(bb.x, bb.x + bb.w / 2, bb.x + bb.w);
-        ys.push(bb.y, bb.y + bb.h / 2, bb.y + bb.h);
-      }
+      // 자손까지 훑는다 — 패널 안쪽 요소에도 붙을 수 있어야 한다.
+      // 움직이는 요소는 그 자손까지 통째로 건너뛴다.
+      const walk = (els: OPElement[]): void => {
+        for (const el of els) {
+          if (excluded.has(el.id) || !el.visible) continue;
+          const info = map.get(el.id);
+          if (info) {
+            const bb = info.aabb;
+            xs.push(bb.x, bb.x + bb.w / 2, bb.x + bb.w);
+            ys.push(bb.y, bb.y + bb.h / 2, bb.y + bb.h);
+            ws.push(bb.w);
+            hs.push(bb.h);
+            rects.push(bb);
+          }
+          if (el.children.length > 0) walk(el.children);
+        }
+      };
+      walk(ab.children);
     }
-    this.snapTargets = { xs, ys };
+    this.snapTargets = { xs, ys, ws, hs, rects };
+  }
+
+  /**
+   * 이웃과의 간격을 맞추는 스냅.
+   *
+   * 가장자리 스냅만으로는 "같은 간격으로 늘어놓기"를 손으로 맞춰야 한다.
+   * 양옆에 이웃이 있으면 두 간격이 같아지는 자리에, 한쪽만 있으면 이미
+   * 쓰이고 있는 간격과 같아지는 자리에 물린다.
+   */
+  private gapSnap(
+    moving: Rect, axis: "h" | "v", threshold: number
+  ): { adj: number; hints: GapHint[] } | null {
+    const rects = this.snapTargets?.rects;
+    if (!rects || rects.length === 0) return null;
+    const lo = (r: Rect) => (axis === "h" ? r.x : r.y);
+    const hi = (r: Rect) => (axis === "h" ? r.x + r.w : r.y + r.h);
+    const clo = (r: Rect) => (axis === "h" ? r.y : r.x);
+    const chi = (r: Rect) => (axis === "h" ? r.y + r.h : r.x + r.w);
+    // 직교 방향으로 겹치는 것만 이웃으로 본다 — 멀리 떨어진 줄과 맞추면 혼란스럽다
+    const band = rects.filter((r) => chi(r) > clo(moving) && clo(r) < chi(moving));
+    if (band.length === 0) return null;
+
+    let before: Rect | null = null;
+    let after: Rect | null = null;
+    for (const r of band) {
+      if (hi(r) <= lo(moving) && (!before || hi(r) > hi(before))) before = r;
+      if (lo(r) >= hi(moving) && (!after || lo(r) < lo(after))) after = r;
+    }
+
+    type Cand = { adj: number; before: Rect | null; after: Rect | null };
+    const cands: Cand[] = [];
+    if (before && after) {
+      const free = lo(after) - hi(before) - (hi(moving) - lo(moving));
+      if (free >= 0) cands.push({ adj: hi(before) + free / 2 - lo(moving), before, after });
+    }
+    for (const g of commonGaps(band, axis)) {
+      if (before) cands.push({ adj: hi(before) + g - lo(moving), before, after: null });
+      if (after) cands.push({ adj: lo(after) - g - hi(moving), before: null, after });
+    }
+
+    let best: Cand | null = null;
+    for (const c of cands) {
+      if (Math.abs(c.adj) <= threshold && (!best || Math.abs(c.adj) < Math.abs(best.adj))) best = c;
+    }
+    if (!best) return null;
+    const moved: Rect = axis === "h"
+      ? { ...moving, x: moving.x + best.adj }
+      : { ...moving, y: moving.y + best.adj };
+    const hints: GapHint[] = [];
+    if (best.before) hints.push(gapHint(best.before, moved, axis));
+    if (best.after) hints.push(gapHint(moved, best.after, axis));
+    return { adj: best.adj, hints };
   }
 
   private applyMoveSnap(
     d: Extract<DragState, { mode: "move" }>, dx: number, dy: number, bypass: boolean
   ): { dx: number; dy: number } {
     this.snapLines = [];
+    this.gapHints = [];
     if (bypass) return { dx, dy };
-    const { snapGrid, snapElements, snapGuides, gridSize } = store.settings;
+    const { snapGrid, snapElements, snapGaps, gridSize } = store.settings;
     const threshold = SNAP_SCREEN_PX / store.view.zoom;
     const ab = findArtboard(store.doc, d.artboardId);
     if (!ab) return { dx, dy };
@@ -1226,10 +1633,8 @@ export class CanvasView {
 
     // 스냅 대상은 드래그 중 움직이지 않으므로 시작할 때 한 번만 모은다.
     // 프레임마다 다시 모으면 요소 수의 제곱으로 비용이 늘어난다.
-    const targets = this.snapTargets ?? { xs: [], ys: [] };
-    const targetXs = targets.xs;
-    const targetYs = targets.ys;
-    void snapElements; void snapGuides;
+    const targetXs = this.snapTargets?.xs ?? [];
+    const targetYs = this.snapTargets?.ys ?? [];
 
     let bestDx: { adj: number; line: number } | null = null;
     for (const mx of movingXs) {
@@ -1255,13 +1660,27 @@ export class CanvasView {
     if (bestDx) this.snapLines.push({ axis: "v", world: bestDx.line });
     if (bestDy) this.snapLines.push({ axis: "h", world: bestDy.line });
 
+    // 간격 스냅 — 가장자리에 물리지 않은 축에서만 시도한다
+    let gapX = false;
+    let gapY = false;
+    if (snapGaps && snapElements) {
+      if (!bestDx) {
+        const g = this.gapSnap(moving, "h", threshold);
+        if (g) { outDx = dx + g.adj; this.gapHints.push(...g.hints); gapX = true; }
+      }
+      if (!bestDy) {
+        const g = this.gapSnap(moving, "v", threshold);
+        if (g) { outDy = dy + g.adj; this.gapHints.push(...g.hints); gapY = true; }
+      }
+    }
+
     // 격자 스냅 (다른 스냅이 없을 때)
     if (snapGrid) {
-      if (!bestDx) {
+      if (!bestDx && !gapX) {
         const localX = d.initAABB.x + dx - abr.x;
         outDx = Math.round(localX / gridSize) * gridSize + abr.x - d.initAABB.x;
       }
-      if (!bestDy) {
+      if (!bestDy && !gapY) {
         const localY = d.initAABB.y + dy - abr.y;
         outDy = Math.round(localY / gridSize) * gridSize + abr.y - d.initAABB.y;
       }
@@ -1340,7 +1759,7 @@ export class CanvasView {
   private applyResizeSnap(
     d: Extract<DragState, { mode: "resize" }>, rect: Rect, handle: Handle
   ): Rect {
-    const { snapGrid, snapElements, snapGuides, gridSize } = store.settings;
+    const { snapGrid, snapElements, gridSize } = store.settings;
     const threshold = SNAP_SCREEN_PX / store.view.zoom;
     const ab = findArtboard(store.doc, d.artboardId);
     if (!ab) return rect;
@@ -1350,10 +1769,13 @@ export class CanvasView {
     const wRect = { x: rect.x + off.x, y: rect.y + off.y, w: rect.w, h: rect.h };
 
     // 이동과 마찬가지로 대상은 드래그 시작 시 모아 둔 것을 쓴다
-    const prepared = this.snapTargets ?? { xs: [], ys: [] };
-    const targetXs = [...prepared.xs];
-    const targetYs = [...prepared.ys];
-    void snapElements; void snapGuides;
+    const prepared = this.snapTargets;
+    const targetXs = [...(prepared?.xs ?? [])];
+    const targetYs = [...(prepared?.ys ?? [])];
+    // 다른 요소와 같은 크기가 되는 자리도 후보에 넣는다.
+    // 반대편 가장자리를 고정한 채 폭·높이를 맞추는 것이므로 핸들마다 다르다.
+    const sizeX = snapElements ? (prepared?.ws ?? []) : [];
+    const sizeY = snapElements ? (prepared?.hs ?? []) : [];
     if (snapGrid) {
       const edgeX = handle.includes("w") ? wRect.x : wRect.x + wRect.w;
       const edgeY = handle.includes("n") ? wRect.y : wRect.y + wRect.h;
@@ -1363,32 +1785,34 @@ export class CanvasView {
 
     if (handle.includes("e")) {
       const edge = wRect.x + wRect.w;
-      const best = nearest(targetXs, edge, threshold);
+      const best = nearest([...targetXs, ...sizeX.map((w) => wRect.x + w)], edge, threshold);
       if (best !== null) {
         wRect.w = Math.max(1, best - wRect.x);
         this.snapLines.push({ axis: "v", world: best });
       }
     }
     if (handle.includes("w")) {
-      const best = nearest(targetXs, wRect.x, threshold);
+      const right = wRect.x + wRect.w;
+      const best = nearest([...targetXs, ...sizeX.map((w) => right - w)], wRect.x, threshold);
       if (best !== null) {
-        wRect.w = Math.max(1, wRect.x + wRect.w - best);
+        wRect.w = Math.max(1, right - best);
         wRect.x = best;
         this.snapLines.push({ axis: "v", world: best });
       }
     }
     if (handle.includes("s")) {
       const edge = wRect.y + wRect.h;
-      const best = nearest(targetYs, edge, threshold);
+      const best = nearest([...targetYs, ...sizeY.map((hh) => wRect.y + hh)], edge, threshold);
       if (best !== null) {
         wRect.h = Math.max(1, best - wRect.y);
         this.snapLines.push({ axis: "h", world: best });
       }
     }
     if (handle.includes("n")) {
-      const best = nearest(targetYs, wRect.y, threshold);
+      const bottom = wRect.y + wRect.h;
+      const best = nearest([...targetYs, ...sizeY.map((hh) => bottom - hh)], wRect.y, threshold);
       if (best !== null) {
-        wRect.h = Math.max(1, wRect.y + wRect.h - best);
+        wRect.h = Math.max(1, bottom - best);
         wRect.y = best;
         this.snapLines.push({ axis: "h", world: best });
       }
@@ -1498,6 +1922,84 @@ export class CanvasView {
 }
 
 /* ================= 헬퍼 ================= */
+
+/** 배치 계산용 이름표 상자 (화면 좌표, 높이는 LABEL_LANE_PX 고정) */
+interface LabelBox {
+  x: number;
+  y: number;
+  w: number;
+}
+
+/** 이름표에 마지막으로 적은 값을 그대로 다시 쓰지 않도록 기억해 둔다 */
+function hideLabel(rec: ElNode): void {
+  if (rec.hidden) return;
+  rec.label.style.display = "none";
+  rec.hidden = true;
+}
+
+function showLabel(rec: ElNode, top: string): void {
+  if (rec.hidden) {
+    rec.label.style.display = "";
+    rec.hidden = false;
+  }
+  if (rec.top !== top) {
+    rec.label.style.top = top;
+    rec.top = top;
+  }
+}
+
+function labelsOverlap(p: LabelBox, x: number, y: number, w: number): boolean {
+  return x < p.x + p.w && x + w > p.x &&
+    y < p.y + LABEL_LANE_PX && y + LABEL_LANE_PX > p.y;
+}
+
+/**
+ * 글자 폭 어림값.
+ * 실제 측정은 요소마다 레이아웃을 강제해 프레임을 잡아먹으므로,
+ * 한글·한자는 11px, 나머지는 6px로 계산한다.
+ */
+const textWidthCache = new Map<string, number>();
+
+function textWidthPx(text: string): number {
+  const hit = textWidthCache.get(text);
+  if (hit !== undefined) return hit;
+  let w = 8;
+  for (const ch of text) w += ch.codePointAt(0)! > 0x2e80 ? 11 : 6;
+  // 이름을 계속 고치는 동안 무한정 쌓이지 않게 한도를 둔다
+  if (textWidthCache.size > 2000) textWidthCache.clear();
+  textWidthCache.set(text, w);
+  return w;
+}
+
+/** 두 점을 감싸는 사각형 (선의 화면 밖 판정용) */
+function lineBounds(a: Point, b: Point): Rect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return { x, y, w: Math.max(1, Math.abs(b.x - a.x)), h: Math.max(1, Math.abs(b.y - a.y)) };
+}
+
+/** 나란한 요소들 사이에 이미 쓰이고 있는 간격 값 (최대 8개) */
+function commonGaps(band: Rect[], axis: "h" | "v"): number[] {
+  const lo = (r: Rect) => (axis === "h" ? r.x : r.y);
+  const hi = (r: Rect) => (axis === "h" ? r.x + r.w : r.y + r.h);
+  const sorted = [...band].sort((a, b) => lo(a) - lo(b));
+  const gaps = new Set<number>();
+  for (let i = 1; i < sorted.length && gaps.size < 8; i++) {
+    const g = Math.round((lo(sorted[i]) - hi(sorted[i - 1])) * 100) / 100;
+    if (g > 0.5) gaps.add(g);
+  }
+  return [...gaps];
+}
+
+/** a가 b보다 앞선다고 가정하고 둘 사이 간격 표시를 만든다 */
+function gapHint(a: Rect, b: Rect, axis: "h" | "v"): GapHint {
+  if (axis === "h") {
+    const y = (Math.max(a.y, b.y) + Math.min(a.y + a.h, b.y + b.h)) / 2;
+    return { axis, a: { x: a.x + a.w, y }, b: { x: b.x, y }, value: b.x - (a.x + a.w) };
+  }
+  const x = (Math.max(a.x, b.x) + Math.min(a.x + a.w, b.x + b.w)) / 2;
+  return { axis, a: { x, y: a.y + a.h }, b: { x, y: b.y }, value: b.y - (a.y + a.h) };
+}
 
 /** outer가 inner를 완전히 담고 있는지 */
 function rectContainsRect(outer: Rect, inner: Rect): boolean {

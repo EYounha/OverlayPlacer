@@ -3,7 +3,7 @@ import type { Artboard, OPElement } from "../types";
 import { typeInfo } from "../types";
 import { findArtboard, findElement } from "../model/doc";
 import { deleteArtboard, duplicateArtboard, moveInTree } from "../actions";
-import { h, clearChildren } from "./dom";
+import { h, clearChildren, icon } from "./dom";
 import { showMenu } from "./contextmenu";
 import { buildElementContextMenu } from "./sharedMenus";
 import { confirmDialog, newArtboardDialog } from "./dialogs";
@@ -25,6 +25,8 @@ export class LayersPanel {
   private dragging = false;
   private dropTarget: DropTarget | null = null;
   private ghost: HTMLElement | null = null;
+  /** Shift 범위 선택의 시작점 */
+  private anchorId: string | null = null;
 
   constructor() {
     this.list = h("div", { class: "layers-list" });
@@ -40,7 +42,7 @@ export class LayersPanel {
           class: "icon-btn",
           title: "새 아트보드",
           onclick: () => newArtboardDialog()
-        }, "+")
+        }, icon("add", 16))
       ),
       this.list
     );
@@ -129,8 +131,8 @@ export class LayersPanel {
           e.stopPropagation();
           this.toggleCollapse(ab.id);
         }
-      }, this.collapsed.has(ab.id) ? "▸" : "▾"),
-      h("span", { class: "ab-icon" }, "▣"),
+      }, icon(this.collapsed.has(ab.id) ? "chevronRight" : "chevronDown", 14)),
+      h("span", { class: "ab-icon" }, icon("artboard", 13)),
       h("span", { class: "layer-name" }, ab.name),
       h("span", { class: "layer-dim" }, `${ab.width}×${ab.height}`)
     );
@@ -181,7 +183,9 @@ export class LayersPanel {
           e.stopPropagation();
           this.toggleCollapse(el.id);
         }
-      }, el.children.length === 0 ? "" : this.collapsed.has(el.id) ? "▸" : "▾"),
+      }, el.children.length === 0
+        ? null
+        : icon(this.collapsed.has(el.id) ? "chevronRight" : "chevronDown", 14)),
       h("span", { class: "type-dot", style: { background: el.color || info.color } }),
       h("span", { class: "layer-name" }, el.name),
       h("button", {
@@ -194,7 +198,7 @@ export class LayersPanel {
           if (f) f.el.locked = !f.el.locked;
           store.commit();
         }
-      }, el.locked ? "🔒" : "🔓"),
+      }, icon(el.locked ? "locked" : "unlocked", 14)),
       h("button", {
         class: `row-action${el.visible ? "" : " on"}`,
         title: el.visible ? "숨기기" : "표시",
@@ -205,16 +209,21 @@ export class LayersPanel {
           if (f) f.el.visible = !f.el.visible;
           store.commit();
         }
-      }, el.visible ? "👁" : "―")
+      }, icon(el.visible ? "visible" : "hidden", 14))
     );
 
     row.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       if ((e.target as HTMLElement).closest("button")) return;
-      if (e.shiftKey) {
+      // Ctrl = 하나씩 더하기·빼기, Shift = 목록에서 이어진 범위
+      if (e.ctrlKey || e.metaKey) {
         store.toggleSelect(el.id);
-      } else if (!store.selection.includes(el.id)) {
-        store.select([el.id]);
+        this.anchorId = el.id;
+      } else if (e.shiftKey && this.anchorId) {
+        this.selectRange(this.anchorId, el.id);
+      } else {
+        if (!store.selection.includes(el.id)) store.select([el.id]);
+        this.anchorId = el.id;
       }
       this.dragIds = store.topLevelSelection();
       this.dragStart = { x: e.clientX, y: e.clientY };
@@ -231,6 +240,22 @@ export class LayersPanel {
       showMenu(buildElementContextMenu(), e.clientX, e.clientY);
     });
     return row;
+  }
+
+  /** 목록에 보이는 순서대로 두 행 사이를 모두 선택한다 */
+  private selectRange(fromId: string, toId: string): void {
+    const ids: string[] = [];
+    for (const row of this.list.children) {
+      const id = (row as HTMLElement).dataset.elId;
+      if (id) ids.push(id);
+    }
+    const a = ids.indexOf(fromId);
+    const b = ids.indexOf(toId);
+    if (a < 0 || b < 0) {
+      store.select([toId]);
+      return;
+    }
+    store.select(a <= b ? ids.slice(a, b + 1) : ids.slice(b, a + 1));
   }
 
   private toggleCollapse(id: string): void {

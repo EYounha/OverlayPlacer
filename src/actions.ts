@@ -1,13 +1,15 @@
 import { store } from "./state/store";
-import type { Artboard, OPElement, Point, Rect } from "./types";
+import type { Artboard, Measure, OPElement, Point, Rect } from "./types";
 import {
   ancestorsOf, cloneDoc, createArtboard, createElement, findArtboard, findElement,
-  genId, isAncestor, parseProject, reassignIds, serializeForAI, serializeProject
+  genId, isAncestor, parseProject, pruneMeasures, reassignIds, serializeForAI,
+  serializeProject
 } from "./model/doc";
 import {
-  applyMat, localRectOf, matInvert, matMul, matRotateDeg, matTranslate,
+  applyMat, buildWorldMap, localRectOf, matInvert, matMul, matRotateDeg, matTranslate,
   parentWorldMatrix, worldInfoOf, writeLocalRect, type Mat
 } from "./model/geometry";
+import { dominantAxis, measureDelta, measureGeom } from "./model/measure";
 import { toast } from "./ui/toast";
 import { imagesReady, registerImage } from "./state/imageStore";
 import { openTextFile, readClipboardText, saveTextFile, writeClipboardText } from "./platform";
@@ -58,6 +60,8 @@ export function deleteSelection(): void {
     const found = findElement(store.doc, id);
     if (found) found.siblings.splice(found.siblings.indexOf(found.el), 1);
   }
+  // 사라진 요소를 가리키는 치수선은 문서에 남기지 않는다
+  pruneMeasures(store.doc);
   store.selection = [];
   store.commit();
 }
@@ -328,14 +332,22 @@ export function reorder(direction: "front" | "back" | "forward" | "backward"): v
 /* ---------- 정렬 · 분배 ---------- */
 
 export type AlignOp = "left" | "center-h" | "right" | "top" | "center-v" | "bottom";
+/**
+ * 정렬 기준.
+ *  selection — 선택 묶음의 바깥 경계 (2개 이상일 때 기본)
+ *  parent    — 부모(아트보드 또는 상위 요소) 영역
+ *  key       — 마지막에 선택한 요소(기준 요소)
+ */
+export type AlignTo = "selection" | "parent" | "key";
 
-export function align(op: AlignOp): void {
+export function align(op: AlignOp, to: AlignTo = "selection"): void {
   const ids = store.editableSelection();
   if (ids.length === 0) return;
-  store.beginChange();
-  const found = ids.map((id) => findElement(store.doc, id)!).filter(Boolean);
+  const found = ids
+    .map((id) => findElement(store.doc, id))
+    .filter((f): f is NonNullable<typeof f> => !!f);
+  if (found.length === 0) return;
 
-  // 기준 영역: 다중 선택 → 선택 묶음 AABB(부모 좌표계), 단일 선택 → 부모 콘텐츠 영역
   const items = found.map((f) => {
     const parent = f.parent;
     const pw = parent ? worldInfoOf(store.doc, parent.id)!.w : f.artboard.width;
@@ -343,18 +355,27 @@ export function align(op: AlignOp): void {
     return { f, pw, ph, rect: localRectOf(f.el, pw, ph) };
   });
 
+  // 기준 영역 결정
   let bounds: Rect;
-  if (items.length > 1) {
+  if (to === "parent" || items.length === 1) {
+    bounds = { x: 0, y: 0, w: items[0].pw, h: items[0].ph };
+  } else if (to === "key") {
+    // 마지막으로 선택한 요소를 기준으로 삼는다 (유니티·피그마의 기준 개체)
+    const keyId = store.selection[store.selection.length - 1];
+    const key = items.find((i) => i.f.el.id === keyId) ?? items[items.length - 1];
+    bounds = key.rect;
+  } else {
     const minX = Math.min(...items.map((i) => i.rect.x));
     const minY = Math.min(...items.map((i) => i.rect.y));
     const maxX = Math.max(...items.map((i) => i.rect.x + i.rect.w));
     const maxY = Math.max(...items.map((i) => i.rect.y + i.rect.h));
     bounds = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-  } else {
-    bounds = { x: 0, y: 0, w: items[0].pw, h: items[0].ph };
   }
 
+  store.beginChange();
+  const keyId = to === "key" ? (store.selection[store.selection.length - 1] ?? "") : "";
   for (const it of items) {
+    if (to === "key" && it.f.el.id === keyId) continue; // 기준 자신은 그대로
     const r = { ...it.rect };
     switch (op) {
       case "left": r.x = bounds.x; break;
@@ -405,6 +426,148 @@ export function distribute(axis: "h" | "v"): void {
     cursor += size(it.rect) + gap;
     writeLocalRect(it.f.el, it.pw, it.ph, it.rect);
   }
+  store.commit();
+}
+
+/**
+ * 간격을 직접 지정해 늘어놓는다. 첫 요소 위치를 유지한 채
+ * 나머지를 gap만큼 띄운다 (2개 이상이면 동작).
+ */
+export function spaceEvenly(axis: "h" | "v", gap: number): void {
+  const ids = store.editableSelection();
+  if (ids.length < 2) {
+    toast("간격 적용은 2개 이상 선택 시 사용할 수 있습니다");
+    return;
+  }
+  store.beginChange();
+  const found = ids
+    .map((id) => findElement(store.doc, id))
+    .filter((f): f is NonNullable<typeof f> => !!f);
+  const items = found.map((f) => {
+    const parent = f.parent;
+    const pw = parent ? worldInfoOf(store.doc, parent.id)!.w : f.artboard.width;
+    const ph = parent ? worldInfoOf(store.doc, parent.id)!.h : f.artboard.height;
+    return { f, pw, ph, rect: localRectOf(f.el, pw, ph) };
+  });
+  const pos = axis === "h" ? (r: Rect) => r.x : (r: Rect) => r.y;
+  const size = axis === "h" ? (r: Rect) => r.w : (r: Rect) => r.h;
+  const setPos = axis === "h"
+    ? (r: Rect, v: number) => { r.x = v; }
+    : (r: Rect, v: number) => { r.y = v; };
+
+  items.sort((a, b) => pos(a.rect) - pos(b.rect));
+  let cursor = pos(items[0].rect);
+  for (const it of items) {
+    setPos(it.rect, cursor);
+    cursor += size(it.rect) + gap;
+    writeLocalRect(it.f.el, it.pw, it.ph, it.rect);
+  }
+  store.commit();
+}
+
+/* ---------- 치수선 ---------- */
+
+/**
+ * 요소를 월드 기준으로 옮긴다. 부모가 회전해 있으면 그 회전을 벗겨
+ * 부모 좌표계 이동량으로 환산한다.
+ */
+function moveElementWorld(id: string, dx: number, dy: number): void {
+  const found = findElement(store.doc, id);
+  const info = worldInfoOf(store.doc, id);
+  if (!found || !info) return;
+  const pm = parentWorldMatrix(store.doc, id);
+  const rotOnly: Mat = [pm[0], pm[1], pm[2], pm[3], 0, 0];
+  const local = applyMat(matInvert(rotOnly), { x: dx, y: dy });
+  const r = info.localRect;
+  writeLocalRect(found.el, info.parentW, info.parentH, {
+    x: r.x + local.x, y: r.y + local.y, w: r.w, h: r.h
+  });
+}
+
+/** 두 요소(또는 요소와 아트보드 가장자리) 사이에 치수선을 만든다 */
+export function addMeasure(artboardId: string, m: Omit<Measure, "id">): string | null {
+  const ab = findArtboard(store.doc, artboardId);
+  if (!ab) return null;
+  const dup = ab.measures.find(
+    (x) => x.fromId === m.fromId && x.toId === m.toId && x.axis === m.axis && x.edge === m.edge
+  );
+  if (dup) return dup.id;
+  store.beginChange();
+  const measure: Measure = { ...m, id: genId("ms") };
+  ab.measures.push(measure);
+  store.commit();
+  return measure.id;
+}
+
+/** 선택한 두 요소 사이에 치수선을 만든다 (도구를 바꾸지 않고도 쓸 수 있게) */
+export function measureSelection(): void {
+  const ids = store.topLevelSelection();
+  if (ids.length !== 2) {
+    toast("치수선은 두 요소를 선택했을 때 만들 수 있습니다");
+    return;
+  }
+  const world = buildWorldMap(store.doc);
+  const a = world.get(ids[0]);
+  const b = world.get(ids[1]);
+  if (!a || !b) return;
+  if (a.artboard.id !== b.artboard.id) {
+    toast("같은 아트보드의 요소끼리만 잴 수 있습니다");
+    return;
+  }
+  addMeasure(a.artboard.id, {
+    fromId: ids[0], toId: ids[1], edge: "min",
+    axis: dominantAxis(a.aabb, b.aabb), moves: "to"
+  });
+}
+
+/** 활성 아트보드의 치수선을 모두 지운다 */
+export function clearMeasures(): void {
+  const ab = store.activeArtboard();
+  if (ab.measures.length === 0) return;
+  store.beginChange();
+  ab.measures = [];
+  store.commit();
+}
+
+export function deleteMeasure(artboardId: string, measureId: string): void {
+  const ab = findArtboard(store.doc, artboardId);
+  if (!ab) return;
+  store.beginChange();
+  ab.measures = ab.measures.filter((m) => m.id !== measureId);
+  store.commit();
+}
+
+/** 기준·대상을 서로 바꿔 어느 쪽이 움직일지 뒤집는다 */
+export function flipMeasureTarget(artboardId: string, measureId: string): void {
+  const ab = findArtboard(store.doc, artboardId);
+  const m = ab?.measures.find((x) => x.id === measureId);
+  if (!ab || !m || m.toId === null) return;
+  store.beginChange();
+  m.moves = m.moves === "to" ? "from" : "to";
+  store.commit();
+}
+
+/**
+ * 치수선의 숫자를 고친다 — 지정한 쪽이 그만큼 움직인다.
+ * 구속이 아니라 한 번의 이동이므로 이후 자유롭게 다시 옮길 수 있다.
+ */
+export function applyMeasure(artboardId: string, measureId: string, value: number): void {
+  const ab = findArtboard(store.doc, artboardId);
+  const m = ab?.measures.find((x) => x.id === measureId);
+  if (!ab || !m) return;
+  const geom = measureGeom(ab, m, buildWorldMap(store.doc));
+  if (!geom) return;
+  const movingId = m.toId !== null && m.moves === "to" ? m.toId : m.fromId;
+  const found = findElement(store.doc, movingId);
+  if (!found) return;
+  if (found.el.locked) {
+    toast("잠긴 요소는 옮길 수 없습니다");
+    return;
+  }
+  const d = measureDelta(m, geom, value);
+  if (d.x === 0 && d.y === 0) return;
+  store.beginChange();
+  moveElementWorld(movingId, d.x, d.y);
   store.commit();
 }
 

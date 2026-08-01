@@ -1,5 +1,5 @@
 import type {
-  Artboard, ElementType, OPElement, ProjectDoc
+  Artboard, ElementType, Measure, OPElement, ProjectDoc
 } from "../types";
 import { ANCHORS, ELEMENT_TYPES, typeInfo } from "../types";
 import { getImage, isImageKey, registerImage } from "../state/imageStore";
@@ -44,6 +44,7 @@ export function createArtboard(partial: Partial<Artboard> = {}): Artboard {
     background: partial.background ?? { color: "#17171C", image: null, imageOpacity: 0.5 },
     position: partial.position ?? { x: 0, y: 0 },
     guides: partial.guides ?? { v: [], h: [] },
+    measures: partial.measures ?? [],
     children: partial.children ?? []
   };
 }
@@ -140,6 +141,21 @@ export function ancestorsOf(doc: ProjectDoc, id: string): OPElement[] {
 
 export function isAncestor(doc: ProjectDoc, maybeAncestorId: string, id: string): boolean {
   return ancestorsOf(doc, id).some((a) => a.id === maybeAncestorId);
+}
+
+/**
+ * 참조 대상이 사라진 치수선을 걷어낸다.
+ * 요소를 지운 뒤에 부르면 된다 — 렌더 시점에도 걸러지지만
+ * 문서에 남겨 두면 되돌리기·저장 파일에 쓰레기가 쌓인다.
+ */
+export function pruneMeasures(doc: ProjectDoc): void {
+  const index = buildElementIndex(doc);
+  for (const ab of doc.artboards) {
+    if (ab.measures.length === 0) continue;
+    ab.measures = ab.measures.filter(
+      (m) => index.has(m.fromId) && (m.toId === null || index.has(m.toId))
+    );
+  }
 }
 
 /** 새 요소 ID 재발급 (복제·붙여넣기용) */
@@ -305,6 +321,7 @@ export function parseProject(text: string): ProjectDoc {
         v: numArr(guides.v),
         h: numArr(guides.h)
       },
+      measures: normMeasures(o.measures),
       children: kids.map((k) => normElement(k, 0))
     });
   }
@@ -377,6 +394,26 @@ export function parseProject(text: string): ProjectDoc {
   function num(v: unknown, dflt: number, min: number): number {
     const n = typeof v === "number" && Number.isFinite(v) ? v : dflt;
     return Math.max(min, n);
+  }
+
+  /** 치수선 정규화. 참조가 깨진 것은 렌더 시점에 걸러지므로 여기선 형태만 본다 */
+  function normMeasures(v: unknown): Measure[] {
+    if (!Array.isArray(v)) return [];
+    const out: Measure[] = [];
+    for (const raw of v) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const m = raw as Record<string, unknown>;
+      if (typeof m.fromId !== "string") continue;
+      out.push({
+        id: uniqueId(str(m.id, ""), "ms"),
+        fromId: m.fromId,
+        toId: typeof m.toId === "string" ? m.toId : null,
+        edge: m.edge === "max" ? "max" : "min",
+        axis: m.axis === "v" ? "v" : "h",
+        moves: m.moves === "from" ? "from" : "to"
+      });
+    }
+    return out;
   }
 
   function numArr(v: unknown): number[] {

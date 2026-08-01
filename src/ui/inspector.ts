@@ -3,14 +3,21 @@ import type { Anchor, OPElement, Unit } from "../types";
 import { ANCHORS, ELEMENT_TYPES } from "../types";
 import { findArtboard, findElement } from "../model/doc";
 import { localRectOf, worldInfoOf, writeLocalRect } from "../model/geometry";
-import { align, clearBackgroundImage, distribute, loadBackgroundImage } from "../actions";
+import {
+  align, clearBackgroundImage, distribute, loadBackgroundImage, spaceEvenly,
+  type AlignTo
+} from "../actions";
 import { hasImage } from "../state/imageStore";
-import { h, clearChildren } from "./dom";
+import { h, clearChildren, icon } from "./dom";
+import type { IconName } from "./icons";
 
 export class InspectorPanel {
   root: HTMLElement;
   private body: HTMLElement;
   private pendingRender = false;
+  /** 정렬 기준·간격은 선택이 바뀌어도 유지한다 (연속 작업을 끊지 않도록) */
+  private alignTo: AlignTo = "selection";
+  private gap = 16;
 
   constructor() {
     this.body = h("div", { class: "inspector-body" });
@@ -63,27 +70,85 @@ export class InspectorPanel {
   private renderMulti(count: number): void {
     this.body.append(
       h("div", { class: "insp-section-title" }, `${count}개 요소 선택됨`),
-      this.alignButtons()
+      h(
+        "div",
+        { class: "insp-section" },
+        this.alignModePicker(),
+        this.alignGrid(() => this.alignTo),
+        this.gapRow()
+      )
     );
   }
 
-  private alignButtons(): HTMLElement {
-    const btn = (label: string, title: string, action: () => void) =>
-      h("button", { class: "align-btn", title, onclick: action }, label);
+  /** 정렬 기준 선택 — 유니티·피그마의 "무엇에 맞출지" 선택과 같다 */
+  private alignModePicker(): HTMLElement {
+    const modes: { to: AlignTo; label: string; title: string }[] = [
+      { to: "selection", label: "선택 영역", title: "선택 묶음의 바깥 경계에 맞춘다" },
+      { to: "parent", label: "부모", title: "부모 또는 아트보드 영역에 맞춘다" },
+      { to: "key", label: "기준 개체", title: "마지막으로 고른 요소에 맞춘다" }
+    ];
+    const row = h("div", { class: "segmented" });
+    for (const m of modes) {
+      const btn = h("button", {
+        class: `seg-btn${this.alignTo === m.to ? " active" : ""}`,
+        title: m.title,
+        onclick: () => {
+          this.alignTo = m.to;
+          for (const other of row.children) other.classList.remove("active");
+          btn.classList.add("active");
+        }
+      }, m.label);
+      row.append(btn);
+    }
+    return row;
+  }
+
+  private alignGrid(to: () => AlignTo): HTMLElement {
+    const btn = (name: IconName, title: string, action: () => void) =>
+      h("button", { class: "align-btn", title, onclick: action }, icon(name, 16));
     return h(
       "div",
-      { class: "insp-section" },
+      { class: "align-grid" },
+      btn("alignLeft", "왼쪽 정렬", () => align("left", to())),
+      btn("alignCenterH", "가로 가운데 정렬", () => align("center-h", to())),
+      btn("alignRight", "오른쪽 정렬", () => align("right", to())),
+      btn("distributeH", "가로 등간격 분배", () => distribute("h")),
+      btn("alignTop", "위쪽 정렬", () => align("top", to())),
+      btn("alignCenterV", "세로 가운데 정렬", () => align("center-v", to())),
+      btn("alignBottom", "아래쪽 정렬", () => align("bottom", to())),
+      btn("distributeV", "세로 등간격 분배", () => distribute("v"))
+    );
+  }
+
+  /** 간격을 숫자로 지정해 늘어놓기 */
+  private gapRow(): HTMLElement {
+    const input = h("input", {
+      class: "field-input num", type: "number", step: "1", value: String(this.gap)
+    }) as HTMLInputElement;
+    input.addEventListener("change", () => {
+      const v = Number(input.value);
+      if (Number.isFinite(v)) this.gap = v;
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") input.blur();
+      e.stopPropagation();
+    });
+    return h(
+      "div",
+      { class: "field" },
+      h("label", { class: "field-label" }, "간격"),
       h(
         "div",
-        { class: "align-grid" },
-        btn("⫷", "왼쪽 정렬", () => align("left")),
-        btn("⫶", "가로 가운데 정렬", () => align("center-h")),
-        btn("⫸", "오른쪽 정렬", () => align("right")),
-        btn("⫠", "위쪽 정렬", () => align("top")),
-        btn("⫯", "세로 가운데 정렬", () => align("center-v")),
-        btn("⫮", "아래쪽 정렬", () => align("bottom")),
-        btn("⇹", "가로 등간격 분배", () => distribute("h")),
-        btn("⇳", "세로 등간격 분배", () => distribute("v"))
+        { class: "field-row" },
+        input,
+        h("button", {
+          class: "align-btn", title: "가로로 이 간격만큼 띄우기",
+          onclick: () => spaceEvenly("h", this.gap)
+        }, icon("distributeH", 16)),
+        h("button", {
+          class: "align-btn", title: "세로로 이 간격만큼 띄우기",
+          onclick: () => spaceEvenly("v", this.gap)
+        }, icon("distributeV", 16))
       )
     );
   }
@@ -153,11 +218,11 @@ export class InspectorPanel {
       )
     );
 
-    // 정렬 (단일: 부모 기준)
+    // 정렬 (단일 선택은 부모 영역 기준)
     this.body.append(
       h("div", { class: "insp-section" },
         h("div", { class: "insp-section-title" }, "정렬 · 부모 기준"),
-        this.alignButtons().firstElementChild as HTMLElement
+        this.alignGrid(() => "parent")
       )
     );
 
@@ -296,7 +361,7 @@ export class InspectorPanel {
         class: "row-action",
         title: "삭제",
         onclick: () => this.mutate(elId, (e) => { delete e.meta[key]; })
-      }, "✕")
+      }, icon("close", 13))
     );
   }
 

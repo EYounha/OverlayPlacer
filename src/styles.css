@@ -27,6 +27,7 @@
   --danger: #c14b42;
   --snap: #ff4fa3;
   --guide: #38b8c4;
+  --measure: #ffb02e;
   font-size: 12px;
   /* WebView2는 이 값이 없으면 스크롤바·기본 배경을 밝게 그린다 */
   color-scheme: dark;
@@ -289,8 +290,9 @@ select {
   height: 20px;
   border-radius: 3px;
   color: var(--text-1);
-  font-size: 14px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .icon-btn:hover {
@@ -351,9 +353,16 @@ select {
 
 .tree-toggle {
   width: 14px;
+  height: 14px;
   flex-shrink: 0;
   color: var(--text-2);
-  font-size: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tree-toggle:hover {
+  color: var(--text-0);
 }
 
 .tree-toggle.empty {
@@ -361,8 +370,9 @@ select {
 }
 
 .ab-icon {
-  font-size: 11px;
   color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
 }
 
 .type-dot {
@@ -387,11 +397,13 @@ select {
 .row-action {
   width: 20px;
   height: 18px;
-  font-size: 10px;
   color: var(--text-2);
   border-radius: 3px;
   opacity: 0;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .layer-row:hover .row-action,
@@ -480,7 +492,8 @@ select {
   cursor: grabbing;
 }
 
-.viewport[data-cursor="draw"] {
+.viewport[data-cursor="draw"],
+.viewport[data-cursor="measure"] {
   cursor: crosshair;
 }
 
@@ -573,7 +586,7 @@ select {
   max-width: 100%;
   text-overflow: ellipsis;
   pointer-events: none;
-  opacity: 0.9;
+  opacity: 0.92;
 }
 
 .guide {
@@ -692,6 +705,71 @@ select {
   fill: rgba(58, 121, 187, 0.12);
   stroke: var(--focus);
   stroke-width: 1;
+}
+
+/* ===== 치수선 ===== */
+
+.op-measure-line,
+.op-measure-tick {
+  stroke: var(--measure);
+  stroke-width: 1;
+}
+
+.op-measure-chip {
+  fill: #262626;
+  stroke: var(--measure);
+  stroke-width: 1;
+  pointer-events: all;
+  cursor: text;
+}
+
+.op-measure-text {
+  fill: #ffd49a;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* 드래그 중 맞물린 간격 — 스냅과 같은 색으로 구분한다 */
+.op-gap-line,
+.op-gap-tick {
+  stroke: var(--snap);
+  stroke-width: 1;
+}
+
+.op-gap-chip {
+  fill: #2a1622;
+  stroke: var(--snap);
+  stroke-width: 1;
+}
+
+.op-gap-text {
+  fill: #ffb2d8;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.op-measure-pick {
+  fill: rgba(255, 176, 46, 0.1);
+  stroke: var(--measure);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+.measure-input {
+  position: absolute;
+  width: 62px;
+  height: 21px;
+  background: var(--field);
+  border: 1px solid var(--measure);
+  border-radius: 3px;
+  color: var(--text-0);
+  font-size: 11.5px;
+  text-align: center;
+  padding: 0 4px;
+  outline: none;
+  font-variant-numeric: tabular-nums;
+  z-index: 4;
 }
 
 /* ===== 인스펙터 ===== */
@@ -922,6 +1000,37 @@ input[type="number"] {
   font-variant-numeric: tabular-nums;
 }
 
+/* 유니티 인스펙터의 모드 선택 줄 */
+.segmented {
+  display: flex;
+  background: var(--field);
+  border: 1px solid var(--field-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.seg-btn {
+  flex: 1;
+  height: 20px;
+  font-size: 10.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.seg-btn + .seg-btn {
+  border-left: 1px solid var(--field-border);
+}
+
+.seg-btn:hover {
+  background: var(--hover);
+  color: var(--text-0);
+}
+
+.seg-btn.active {
+  background: var(--selection);
+  color: #fff;
+}
+
 .align-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -930,11 +1039,14 @@ input[type="number"] {
 
 .align-btn {
   height: 22px;
+  min-width: 26px;
   background: var(--button);
   border: 1px solid var(--button-border);
   border-radius: 3px;
   color: var(--text-0);
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .align-btn:hover {
@@ -1003,11 +1115,9 @@ input[type="number"] {
   height: 18px;
   border-radius: 3px;
   color: var(--text-1);
-  font-size: 12px;
-}
-
-.status-btn.wide {
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .status-btn:hover {

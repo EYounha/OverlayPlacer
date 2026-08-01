@@ -1,15 +1,15 @@
 import { store } from "../state/store";
 import type { ElementType, Tool } from "../types";
 import { ELEMENT_TYPES } from "../types";
-import { h } from "./dom";
+import { h, icon } from "./dom";
+import type { IconName } from "./icons";
 
 export class Toolbar {
   root: HTMLElement;
   private toolButtons = new Map<Tool, HTMLElement>();
   private undoBtn: HTMLButtonElement;
   private redoBtn: HTMLButtonElement;
-  private gridBtn: HTMLButtonElement;
-  private snapBtn: HTMLButtonElement;
+  private toggles: { btn: HTMLButtonElement; on: () => boolean }[] = [];
 
   constructor() {
     const typeSelect = h("select", { class: "tool-type-select", title: "생성할 요소 타입" }) as HTMLSelectElement;
@@ -22,23 +22,8 @@ export class Toolbar {
       store.setTool("draw");
     });
 
-    this.undoBtn = h("button", {
-      class: "tool-btn", title: "실행 취소 (Ctrl+Z)", onclick: () => store.undo()
-    }, "↶") as HTMLButtonElement;
-    this.redoBtn = h("button", {
-      class: "tool-btn", title: "다시 실행 (Ctrl+Y)", onclick: () => store.redo()
-    }, "↷") as HTMLButtonElement;
-
-    this.gridBtn = h("button", {
-      class: "tool-btn",
-      title: "격자 표시 (Ctrl+')",
-      onclick: () => store.updateSettings({ showGrid: !store.settings.showGrid })
-    }, "▦") as HTMLButtonElement;
-    this.snapBtn = h("button", {
-      class: "tool-btn",
-      title: "요소에 스냅",
-      onclick: () => store.updateSettings({ snapElements: !store.settings.snapElements })
-    }, "⌖") as HTMLButtonElement;
+    this.undoBtn = this.iconBtn("undo", "실행 취소 (Ctrl+Z)", () => store.undo());
+    this.redoBtn = this.iconBtn("redo", "다시 실행 (Ctrl+Y)", () => store.redo());
 
     this.root = h(
       "div",
@@ -46,15 +31,23 @@ export class Toolbar {
       h(
         "div",
         { class: "tool-group" },
-        this.toolBtn("hand", "✋", "손 (Q)"),
-        this.toolBtn("select", "▲", "선택 (W)"),
-        this.toolBtn("draw", "▢", "요소 그리기 (R)")
+        this.toolBtn("hand", "hand", "손 (Q)"),
+        this.toolBtn("select", "cursor", "선택 (W)"),
+        this.toolBtn("draw", "rect", "요소 그리기 (R)"),
+        this.toolBtn("measure", "measure", "치수선 (M)")
       ),
       typeSelect,
       h("div", { class: "toolbar-sep" }),
       h("div", { class: "tool-group" }, this.undoBtn, this.redoBtn),
       h("div", { class: "toolbar-sep" }),
-      h("div", { class: "tool-group" }, this.gridBtn, this.snapBtn)
+      h(
+        "div",
+        { class: "tool-group" },
+        this.toggleBtn("grid", "격자 표시 (Ctrl+')", "showGrid"),
+        this.toggleBtn("snap", "요소에 스냅", "snapElements"),
+        this.toggleBtn("distributeH", "간격 스냅", "snapGaps"),
+        this.toggleBtn("measure", "치수선 표시", "showMeasures")
+      )
     );
 
     store.on("tool", () => this.syncTools());
@@ -66,17 +59,26 @@ export class Toolbar {
     this.syncToggles();
   }
 
-  private syncToggles(): void {
-    this.gridBtn.classList.toggle("active", store.settings.showGrid);
-    this.snapBtn.classList.toggle("active", store.settings.snapElements);
+  private iconBtn(name: IconName, title: string, action: () => void): HTMLButtonElement {
+    return h("button", { class: "tool-btn", title, onclick: action }, icon(name)) as HTMLButtonElement;
   }
 
-  private toolBtn(tool: Tool, icon: string, title: string): HTMLElement {
-    const btn = h("button", {
-      class: "tool-btn",
-      title,
-      onclick: () => store.setTool(tool)
-    }, icon);
+  private toggleBtn(
+    name: IconName, title: string, key: "showGrid" | "snapElements" | "snapGaps" | "showMeasures"
+  ): HTMLButtonElement {
+    const btn = this.iconBtn(name, title, () =>
+      store.updateSettings({ [key]: !store.settings[key] })
+    );
+    this.toggles.push({ btn, on: () => store.settings[key] });
+    return btn;
+  }
+
+  private syncToggles(): void {
+    for (const t of this.toggles) t.btn.classList.toggle("active", t.on());
+  }
+
+  private toolBtn(tool: Tool, name: IconName, title: string): HTMLElement {
+    const btn = this.iconBtn(name, title, () => store.setTool(tool));
     this.toolButtons.set(tool, btn);
     return btn;
   }

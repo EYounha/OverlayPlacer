@@ -88,6 +88,23 @@ export interface ArtboardBackground {
   imageOpacity: number;
 }
 
+/**
+ * 두 요소(또는 요소와 아트보드 가장자리) 사이의 간격을 표시하는 치수선.
+ * 숫자를 고치면 그 순간 대상이 이동한다 — 지속적인 구속은 없다.
+ */
+export interface Measure {
+  id: string;
+  /** 기준이 되는 요소 */
+  fromId: string;
+  /** 대상 요소. null이면 아트보드 가장자리를 기준으로 잰다 */
+  toId: string | null;
+  /** toId가 null일 때 어느 가장자리까지 잴지 (min = 왼쪽·위, max = 오른쪽·아래) */
+  edge: "min" | "max";
+  axis: "h" | "v";
+  /** 편집 시 어느 쪽을 움직일지 (가장자리 기준일 때는 항상 from) */
+  moves: "to" | "from";
+}
+
 export interface Artboard {
   id: string;
   name: string;
@@ -97,6 +114,8 @@ export interface Artboard {
   /** 편집기 전용: 무한 캔버스 상 위치 (AI 내보내기 시 제외) */
   position: { x: number; y: number };
   guides: { v: number[]; h: number[] };
+  /** 치수선 (AI 내보내기 시 제외 — 편집 보조용) */
+  measures: Measure[];
   children: OPElement[];
 }
 
@@ -124,4 +143,4 @@ export interface Point {
   y: number;
 }
 
-export type Tool = "select" | "hand" | "draw";
+export type Tool = "select" | "hand" | "draw" | "measure";

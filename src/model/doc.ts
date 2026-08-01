@@ -404,13 +404,17 @@ export function parseProject(text: string): ProjectDoc {
       if (typeof raw !== "object" || raw === null) continue;
       const m = raw as Record<string, unknown>;
       if (typeof m.fromId !== "string") continue;
+      const side = (v: unknown): "min" | "max" | undefined =>
+        v === "min" || v === "max" ? v : undefined;
       out.push({
         id: uniqueId(str(m.id, ""), "ms"),
         fromId: m.fromId,
         toId: typeof m.toId === "string" ? m.toId : null,
         edge: m.edge === "max" ? "max" : "min",
         axis: m.axis === "v" ? "v" : "h",
-        moves: m.moves === "from" ? "from" : "to"
+        moves: m.moves === "from" ? "from" : "to",
+        fromSide: side(m.fromSide),
+        toSide: side(m.toSide)
       });
     }
     return out;

@@ -72,12 +72,12 @@ export function measureGeom(
     sign = tc >= fc ? 1 : -1;
   }
 
-  const gap = sign === 1
-    ? minOf(toRect, m.axis) - maxOf(fromRect, m.axis)
-    : minOf(fromRect, m.axis) - maxOf(toRect, m.axis);
-
-  const p0 = sign === 1 ? maxOf(fromRect, m.axis) : minOf(fromRect, m.axis);
-  const p1 = sign === 1 ? minOf(toRect, m.axis) : maxOf(toRect, m.axis);
+  // 변을 지정하지 않았으면 마주 보는 변을 골라 사이 간격을 잰다
+  const fromSide = m.fromSide ?? (sign === 1 ? "max" : "min");
+  const toSide = m.toSide ?? (sign === 1 ? "min" : "max");
+  const p0 = fromSide === "max" ? maxOf(fromRect, m.axis) : minOf(fromRect, m.axis);
+  const p1 = toSide === "max" ? maxOf(toRect, m.axis) : minOf(toRect, m.axis);
+  const gap = (p1 - p0) * sign;
   const cross = crossCenter(fromRect, m.toId === null ? null : toRect, m.axis);
 
   const a: Point = m.axis === "h" ? { x: p0, y: cross } : { x: cross, y: p0 };

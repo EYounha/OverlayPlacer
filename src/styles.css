@@ -780,6 +780,20 @@ select {
   font-variant-numeric: tabular-nums;
 }
 
+/* 치수선 도구가 조준·확정한 도형의 변 */
+.op-edge-aim {
+  stroke: var(--measure);
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.75;
+}
+
+.op-edge-picked {
+  stroke: #ffd08a;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+}
+
 .op-measure-pick {
   fill: rgba(255, 176, 46, 0.1);
   stroke: var(--measure);

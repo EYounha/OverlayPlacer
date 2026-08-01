@@ -103,6 +103,13 @@ export interface Measure {
   axis: "h" | "v";
   /** 편집 시 어느 쪽을 움직일지 (가장자리 기준일 때는 항상 from) */
   moves: "to" | "from";
+  /**
+   * 잴 때 쓸 각 요소의 변 (min = 왼쪽·위, max = 오른쪽·아래).
+   * 없으면 마주 보는 변을 자동으로 골라 사이 간격을 잰다.
+   * 지정하면 왼쪽끼리·오른쪽끼리 같은 변을 잴 수도 있다.
+   */
+  fromSide?: "min" | "max";
+  toSide?: "min" | "max";
 }
 
 export interface Artboard {

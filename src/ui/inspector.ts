@@ -6,7 +6,7 @@ import { buildWorldMap, localRectOf, worldInfoOf, writeLocalRect } from "../mode
 import { measureGeom } from "../model/measure";
 import {
   align, applyMeasure, clearBackgroundImage, deleteMeasure, distribute,
-  flipMeasureTarget, loadBackgroundImage, setMeasureAxis, spaceEvenly,
+  flipMeasureTarget, loadBackgroundImage, setMeasureAxis, setMeasureSide, spaceEvenly,
   type AlignTo
 } from "../actions";
 import { hasImage } from "../state/imageStore";
@@ -103,6 +103,13 @@ export class InspectorPanel {
       h(
         "div",
         { class: "insp-section" },
+        h("div", { class: "insp-section-title" }, "재는 변"),
+        this.sideRow(ab.id, m, "from", "기준"),
+        m.toId === null ? null : this.sideRow(ab.id, m, "to", "대상")
+      ),
+      h(
+        "div",
+        { class: "insp-section" },
         h("div", { class: "insp-section-title" }, "기준"),
         this.readonlyRow("기준", nameOf(m.fromId)),
         this.readonlyRow("대상", nameOf(m.toId)),
@@ -111,6 +118,25 @@ export class InspectorPanel {
           onclick: () => deleteMeasure(ab.id, m.id)
         }, "치수선 삭제")
       )
+    );
+  }
+
+  /** 이 끝에서 도형의 어느 변을 잴지 */
+  private sideRow(
+    artboardId: string, m: Measure, end: "from" | "to", label: string
+  ): HTMLElement {
+    const current = end === "from" ? m.fromSide : m.toSide;
+    const near = m.axis === "h" ? "왼쪽" : "위";
+    const far = m.axis === "h" ? "오른쪽" : "아래";
+    return this.segmented(
+      label,
+      [
+        { value: "auto", label: "자동" },
+        { value: "min", label: near },
+        { value: "max", label: far }
+      ],
+      current ?? "auto",
+      (v) => setMeasureSide(artboardId, m.id, end, v === "auto" ? undefined : (v as "min" | "max"))
     );
   }
 

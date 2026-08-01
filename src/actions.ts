@@ -494,8 +494,11 @@ function moveElementWorld(id: string, dx: number, dy: number): void {
 export function addMeasure(artboardId: string, m: Omit<Measure, "id">): string | null {
   const ab = findArtboard(store.doc, artboardId);
   if (!ab) return null;
+  // 재는 변까지 같아야 중복이다 — 같은 두 요소라도 왼쪽끼리와
+  // 마주 보는 변끼리는 서로 다른 치수선이다
   const dup = ab.measures.find(
-    (x) => x.fromId === m.fromId && x.toId === m.toId && x.axis === m.axis && x.edge === m.edge
+    (x) => x.fromId === m.fromId && x.toId === m.toId && x.axis === m.axis &&
+      x.edge === m.edge && x.fromSide === m.fromSide && x.toSide === m.toSide
   );
   if (dup) return dup.id;
   store.beginChange();
@@ -544,6 +547,21 @@ export function deleteMeasure(artboardId: string, measureId: string): void {
   store.commit();
 }
 
+/** 어느 변을 잴지 바꾼다. auto면 마주 보는 변을 자동으로 고른다 */
+export function setMeasureSide(
+  artboardId: string, measureId: string,
+  end: "from" | "to", side: "min" | "max" | undefined
+): void {
+  const ab = findArtboard(store.doc, artboardId);
+  const m = ab?.measures.find((x) => x.id === measureId);
+  if (!ab || !m) return;
+  const key = end === "from" ? "fromSide" : "toSide";
+  if (m[key] === side) return;
+  store.beginChange();
+  m[key] = side;
+  store.commit();
+}
+
 /** 재는 방향을 가로·세로로 바꾼다 */
 export function setMeasureAxis(artboardId: string, measureId: string, axis: "h" | "v"): void {
   const ab = findArtboard(store.doc, artboardId);
@@ -551,6 +569,9 @@ export function setMeasureAxis(artboardId: string, measureId: string, axis: "h" 
   if (!ab || !m || m.axis === axis) return;
   store.beginChange();
   m.axis = axis;
+  // 변 지정은 축에 매인 값이라 방향이 바뀌면 의미를 잃는다
+  m.fromSide = undefined;
+  m.toSide = undefined;
   store.commit();
 }
 

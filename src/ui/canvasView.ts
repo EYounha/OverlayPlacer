@@ -27,6 +27,13 @@ const LABEL_LANE_PX = 14;
 const LABEL_MAX_LANES = 6;
 /** 치수선을 집을 수 있는 여유 (화면 px) */
 const MEASURE_PICK_PX = 6;
+/** 겹친 치수선을 비켜 놓는 간격과 최대 줄 수 (화면 px) */
+const MEASURE_LANE_PX = 16;
+const MEASURE_MAX_LANES = 6;
+/** 도형의 테두리를 집을 수 있는 여유 (화면 px) */
+const EDGE_PICK_PX = 5;
+/** 치수선 도구는 변을 조준하는 것이 목적이므로 더 넉넉하게 잡는다 */
+const MEASURE_EDGE_PICK_PX = 9;
 /** 이 크기보다 작게 보이는 요소는 이름표를 그리지 않는다 (화면 px) */
 const LABEL_MIN_W = 26;
 const LABEL_MIN_H = 11;
@@ -132,6 +139,33 @@ interface MeasureHit {
   sb: Point;
 }
 
+/**
+ * 집힌 도형의 변.
+ *
+ * 월드 축 기준의 min/max로 환산해 둔다 — 회전한 도형이라도 치수선은
+ * 가로·세로로 재므로, 어느 쪽 끝인지만 알면 된다.
+ */
+interface EdgeHit {
+  id: string;
+  artboardId: string;
+  axis: "h" | "v";
+  side: "min" | "max";
+  /** 그 변의 양 끝 (월드) — 조준 표시를 그리는 데 쓴다 */
+  a: Point;
+  b: Point;
+}
+
+/** 치수선 도구가 고른 대상. side가 없으면 마주 보는 변을 자동으로 쓴다 */
+interface MeasurePick {
+  id: string;
+  artboardId: string;
+  axis?: "h" | "v";
+  side?: "min" | "max";
+  /** 물린 변의 양 끝 (월드) */
+  a?: Point;
+  b?: Point;
+}
+
 /** 마우스 아래에 있는 선택 후보 */
 type PickCandidate =
   | {
@@ -160,8 +194,10 @@ export class CanvasView {
   private gapHints: GapHint[] = [];
   /** 드래그 시작 시 한 번 모으는 스냅 대상 좌표 */
   private snapTargets: SnapTargets | null = null;
-  /** 치수선 도구로 고른 첫 번째 요소 */
-  private measureFrom: string | null = null;
+  /** 치수선 도구로 고른 첫 번째 대상 */
+  private measureFrom: MeasurePick | null = null;
+  /** 치수선 도구가 지금 조준하고 있는 변 */
+  private measureHoverEdge: EdgeHit | null = null;
   /** 이번 프레임에 그린 치수선의 화면 위치 (숫자 클릭 판정용) */
   private measureHits: MeasureHit[] = [];
   private measureEditor: HTMLInputElement | null = null;
@@ -643,13 +679,23 @@ export class CanvasView {
     // 치수선 — 저장된 것과 드래그 중 임시 표시
     this.renderMeasures(frag, world);
     for (const hint of this.gapHints) {
-      this.appendMeasureLine(frag, hint.axis, hint.a, hint.b, fmt(hint.value), "op-gap");
+      this.appendMeasureLine(
+        frag, hint.axis, this.worldToScreen(hint.a), this.worldToScreen(hint.b),
+        fmt(hint.value), "op-gap"
+      );
     }
 
-    // 치수선 도구로 고른 첫 요소 표시
+    // 치수선 도구: 고른 첫 대상과 지금 조준 중인 변
     if (this.measureFrom) {
-      const info = world.get(this.measureFrom);
+      const info = world.get(this.measureFrom.id);
       if (info) frag.append(this.outlinePolygon(info, "op-measure-pick"));
+      if (this.measureFrom.a && this.measureFrom.b) {
+        frag.append(this.edgeSegment(this.measureFrom.a, this.measureFrom.b, "op-edge-picked"));
+      }
+    }
+    if (store.tool === "measure" && this.measureHoverEdge && !this.drag) {
+      const e = this.measureHoverEdge;
+      frag.append(this.edgeSegment(e.a, e.b, "op-edge-aim"));
     }
 
     // 마퀴
@@ -717,34 +763,62 @@ export class CanvasView {
     frag.append(text);
   }
 
+  /** 도형의 한 변을 굵게 덧그린다 (치수선 조준 표시) */
+  private edgeSegment(aw: Point, bw: Point, cls: string): SVGLineElement {
+    const a = this.worldToScreen(aw);
+    const b = this.worldToScreen(bw);
+    return svgEl("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: cls });
+  }
+
   /* ---------- 치수선 그리기 ---------- */
 
+  /**
+   * 저장된 치수선을 그린다.
+   *
+   * 같은 두 도형을 여러 번 재면 선이 한자리에 포개져 숫자를 읽을 수 없다.
+   * 화면 기준으로 부딪히는 것끼리 한 줄씩 비켜 놓는다.
+   */
   private renderMeasures(frag: DocumentFragment, world: Map<string, WorldEntry>): void {
     this.measureHits = [];
     if (!store.settings.showMeasures) return;
     const visible = this.visibleWorldRect(60);
+    const placed: { axis: "h" | "v"; lo: number; hi: number; cross: number }[] = [];
     for (const ab of store.doc.artboards) {
       for (const m of ab.measures) {
         const geom = measureGeom(ab, m, world);
         if (!geom) continue;
         if (!rectsIntersect(visible, lineBounds(geom.a, geom.b))) continue;
+        const a = this.worldToScreen(geom.a);
+        const b = this.worldToScreen(geom.b);
+        const horiz = geom.axis === "h";
+        const lo = Math.min(horiz ? a.x : a.y, horiz ? b.x : b.y);
+        const hi = Math.max(horiz ? a.x : a.y, horiz ? b.x : b.y);
+        let cross = horiz ? a.y : a.x;
+        let lane = 0;
+        while (lane < MEASURE_MAX_LANES) {
+          const c = cross + lane * MEASURE_LANE_PX;
+          const hit = placed.some((p) => p.axis === geom.axis &&
+            Math.abs(p.cross - c) < MEASURE_LANE_PX && p.lo < hi && p.hi > lo);
+          if (!hit) break;
+          lane++;
+        }
+        cross += Math.min(lane, MEASURE_MAX_LANES - 1) * MEASURE_LANE_PX;
+        placed.push({ axis: geom.axis, lo, hi, cross });
+        if (horiz) { a.y = cross; b.y = cross; } else { a.x = cross; b.x = cross; }
+
         const on = store.selectedMeasureId === m.id || this.pickHighlight === m.id;
-        const drawn = this.appendMeasureLine(
-          frag, geom.axis, geom.a, geom.b, fmt(geom.gap), "op-measure", on
-        );
+        const drawn = this.appendMeasureLine(frag, geom.axis, a, b, fmt(geom.gap), "op-measure", on);
         this.measureHits.push({ artboardId: ab.id, measure: m, geom, ...drawn });
       }
     }
   }
 
-  /** 치수선 한 줄을 그리고 화면상의 선·숫자 칩 위치를 돌려준다 */
+  /** 치수선 한 줄을 그리고 화면상의 선·숫자 칩 위치를 돌려준다 (좌표는 화면 기준) */
   private appendMeasureLine(
-    frag: DocumentFragment, axis: "h" | "v", aw: Point, bw: Point,
+    frag: DocumentFragment, axis: "h" | "v", a: Point, b: Point,
     text: string, cls: string, selected = false
   ): { chip: Rect; sa: Point; sb: Point } {
     const on = selected ? " sel" : "";
-    const a = this.worldToScreen(aw);
-    const b = this.worldToScreen(bw);
     frag.append(svgEl("line", {
       x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: `${cls}-line${on}`
     }));
@@ -1101,6 +1175,11 @@ export class CanvasView {
       }
     }
     const map = this.worldMap();
+    const tol = EDGE_PICK_PX / store.view.zoom;
+    // 클릭과 같은 우선순위로 늘어놓는다: 테두리에 걸린 것이 먼저,
+    // 그다음이 안쪽에 걸린 것. 각 묶음 안에서는 위에 그려진 것부터.
+    const edges: PickCandidate[] = [];
+    const insides: PickCandidate[] = [];
     // 히트 테스트와 같은 순서(위 → 아래, 자손 먼저)로 훑는다
     const walk = (els: OPElement[], artboardId: string): void => {
       for (let i = els.length - 1; i >= 0; i--) {
@@ -1108,14 +1187,22 @@ export class CanvasView {
         if (!el.visible || el.locked) continue;
         walk(el.children, artboardId);
         const info = map.get(el.id);
-        if (!info || !pointInElement(info, world)) continue;
+        if (!info) continue;
+        // 안쪽이 아니어도 테두리에 걸리면 후보다 — 선만 보이는 도형도 고를 수 있게.
+        // 테두리 판정은 안팎을 가리지 않는다. 클릭이 테두리를 먼저 보므로
+        // 목록의 차례도 그와 같아야 한다.
+        const bb = info.aabb;
+        const nearBox = world.x >= bb.x - tol && world.x <= bb.x + bb.w + tol &&
+          world.y >= bb.y - tol && world.y <= bb.y + bb.h + tol;
+        const onEdge = nearBox && nearestEdge(worldCorners(info), world, tol, bb) !== null;
+        if (!onEdge && !pointInElement(info, world)) continue;
         const t = typeInfo(el.type);
-        out.push({
+        (onEdge ? edges : insides).push({
           kind: "element",
           id: el.id,
           artboardId,
           label: el.name || t.label,
-          hint: t.label,
+          hint: onEdge ? `${t.label} 테두리` : t.label,
           swatch: el.color || t.color,
           selected: store.selection.includes(el.id)
         });
@@ -1125,6 +1212,7 @@ export class CanvasView {
       const ab = store.doc.artboards[i];
       walk(ab.children, ab.id);
     }
+    out.push(...edges, ...insides);
     return out;
   }
 
@@ -1162,30 +1250,48 @@ export class CanvasView {
    */
   private onMeasureClick(world: Point): void {
     const map = this.worldMap();
-    const hit = this.hitElement(world);
+    // 변에 걸리면 그 변을 물고, 안쪽을 찍으면 마주 보는 변을 알아서 고른다
+    const edge = this.edgeHitAt(world, MEASURE_EDGE_PICK_PX);
+    const pick: MeasurePick | null = edge
+      ? {
+          id: edge.id, artboardId: edge.artboardId,
+          axis: edge.axis, side: edge.side, a: edge.a, b: edge.b
+        }
+      : (() => {
+          const hit = this.hitElement(world);
+          return hit ? { id: hit.id, artboardId: hit.artboardId } : null;
+        })();
+
     if (!this.measureFrom) {
-      if (!hit) return;
-      store.setActiveArtboard(hit.artboardId);
-      this.measureFrom = hit.id;
+      if (!pick) return;
+      store.setActiveArtboard(pick.artboardId);
+      this.measureFrom = pick;
       this.renderOverlay();
       return;
     }
-    const from = map.get(this.measureFrom);
-    const fromId = this.measureFrom;
+    const first = this.measureFrom;
     this.measureFrom = null;
+    const from = map.get(first.id);
     if (!from) { this.renderOverlay(); return; }
 
-    if (hit && hit.id !== fromId) {
-      const to = map.get(hit.id);
+    if (pick && pick.id !== first.id) {
+      const to = map.get(pick.id);
       if (to && to.artboard.id === from.artboard.id) {
+        // 어느 한쪽이라도 변을 물었으면 그 방향으로 잰다
+        const axis = first.axis ?? pick.axis ?? dominantAxis(from.aabb, to.aabb);
         addMeasure(from.artboard.id, {
-          fromId, toId: hit.id, edge: "min",
-          axis: dominantAxis(from.aabb, to.aabb), moves: "to"
+          fromId: first.id,
+          toId: pick.id,
+          edge: "min",
+          axis,
+          moves: "to",
+          fromSide: first.axis === axis ? first.side : undefined,
+          toSide: pick.axis === axis ? pick.side : undefined
         });
       } else {
         toast("같은 아트보드의 요소끼리만 잴 수 있습니다");
       }
-    } else if (!hit) {
+    } else if (!pick) {
       const bb = from.aabb;
       const away = [
         { d: bb.x - world.x, axis: "h" as const, edge: "min" as const },
@@ -1194,7 +1300,12 @@ export class CanvasView {
         { d: world.y - (bb.y + bb.h), axis: "v" as const, edge: "max" as const }
       ].reduce((best, c) => (c.d > best.d ? c : best));
       addMeasure(from.artboard.id, {
-        fromId, toId: null, edge: away.edge, axis: away.axis, moves: "from"
+        fromId: first.id,
+        toId: null,
+        edge: away.edge,
+        axis: away.axis,
+        moves: "from",
+        fromSide: first.axis === away.axis ? first.side : undefined
       });
     }
     this.renderOverlay();
@@ -1241,10 +1352,12 @@ export class CanvasView {
 
   /** 치수선 도구의 대기 상태를 푼다 (Esc·도구 전환) */
   cancelMeasure(): boolean {
-    if (!this.measureFrom) return false;
+    if (!this.measureFrom && !this.measureHoverEdge) return false;
+    const had = this.measureFrom !== null;
     this.measureFrom = null;
+    this.measureHoverEdge = null;
     this.renderOverlay();
-    return true;
+    return had;
   }
 
   private beginMoveDrag(world: Point, pointerId: number, selectionChanged = false): void {
@@ -1291,6 +1404,16 @@ export class CanvasView {
         const newHover = hit?.id ?? null;
         if (newHover !== this.hoverId) {
           this.hoverId = newHover;
+          this.renderOverlay();
+        }
+      } else if (store.tool === "measure") {
+        // 어느 변을 물게 될지 미리 보여 준다
+        const edge = this.edgeHitAt(world, MEASURE_EDGE_PICK_PX);
+        const prev = this.measureHoverEdge;
+        const same = prev && edge && prev.id === edge.id &&
+          prev.axis === edge.axis && prev.side === edge.side;
+        if (!same) {
+          this.measureHoverEdge = edge;
           this.renderOverlay();
         }
       }
@@ -1607,7 +1730,15 @@ export class CanvasView {
     return null;
   }
 
+  /**
+   * 요소 집기.
+   *
+   * 테두리를 먼저 본다 — 큰 도형에 가려진 도형이라도 그 선만 보이면
+   * 찍어서 고를 수 있어야 한다. 선에 걸리지 않으면 평소대로 내부를 본다.
+   */
   private hitElement(world: Point): { id: string; artboardId: string } | null {
+    const edge = this.edgeHitAt(world, EDGE_PICK_PX);
+    if (edge) return { id: edge.id, artboardId: edge.artboardId };
     // 문서가 안 바뀌었으면 캐시를 재사용한다 — 호버가 가장 뜨거운 경로다
     const map = this.worldMap();
     for (let i = store.doc.artboards.length - 1; i >= 0; i--) {
@@ -1616,6 +1747,40 @@ export class CanvasView {
       if (hit) return { id: hit, artboardId: ab.id };
     }
     return null;
+  }
+
+  /**
+   * 커서에 걸린 도형의 변을 찾는다. 위에 그려진 것부터 훑어
+   * 한 요소라도 변이 걸리면 그 요소의 가장 가까운 변을 돌려준다.
+   */
+  private edgeHitAt(world: Point, tolScreen: number): EdgeHit | null {
+    const tol = tolScreen / store.view.zoom;
+    const map = this.worldMap();
+    let found: EdgeHit | null = null;
+    const walk = (els: OPElement[], artboardId: string): boolean => {
+      for (let i = els.length - 1; i >= 0; i--) {
+        const el = els[i];
+        if (!el.visible || el.locked) continue;
+        if (walk(el.children, artboardId)) return true;
+        const info = map.get(el.id);
+        if (!info) continue;
+        const bb = info.aabb;
+        // 경계에서 멀면 어느 변도 걸릴 수 없다
+        if (world.x < bb.x - tol || world.x > bb.x + bb.w + tol ||
+          world.y < bb.y - tol || world.y > bb.y + bb.h + tol) continue;
+        const edge = nearestEdge(worldCorners(info), world, tol, bb);
+        if (edge) {
+          found = { ...edge, id: el.id, artboardId };
+          return true;
+        }
+      }
+      return false;
+    };
+    for (let i = store.doc.artboards.length - 1; i >= 0; i--) {
+      const ab = store.doc.artboards[i];
+      if (walk(ab.children, ab.id)) break;
+    }
+    return found;
   }
 
   private hitIn(
@@ -2157,6 +2322,31 @@ function hexWithAlpha(hex: string, alpha: number): string {
 
 function dist(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+/**
+ * 도형의 네 변 중 커서에 가장 가까운 것.
+ *
+ * 회전한 도형도 실제 보이는 선을 기준으로 판정하고, 결과는 월드 축의
+ * min/max로 환산해 돌려준다 — 치수선은 언제나 가로·세로로 재기 때문이다.
+ */
+function nearestEdge(
+  corners: Point[], p: Point, tol: number, bb: Rect
+): { axis: "h" | "v"; side: "min" | "max"; a: Point; b: Point } | null {
+  let best: { d: number; a: Point; b: Point } | null = null;
+  for (let i = 0; i < 4; i++) {
+    const a = corners[i];
+    const b = corners[(i + 1) % 4];
+    const d = distToSegment(p, a, b);
+    if (d <= tol && (!best || d < best.d)) best = { d, a, b };
+  }
+  if (!best) return null;
+  const mid = { x: (best.a.x + best.b.x) / 2, y: (best.a.y + best.b.y) / 2 };
+  const cx = bb.x + bb.w / 2;
+  const cy = bb.y + bb.h / 2;
+  const axis = Math.abs(mid.x - cx) >= Math.abs(mid.y - cy) ? "h" : "v";
+  const side = axis === "h" ? (mid.x < cx ? "min" : "max") : (mid.y < cy ? "min" : "max");
+  return { axis, side, a: best.a, b: best.b };
 }
 
 /** 점에서 선분까지의 거리 — 치수선을 집는 데 쓴다 */

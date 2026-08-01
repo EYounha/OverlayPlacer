@@ -1,0 +1,82 @@
+name: Windows 빌드
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    tags:
+      - "v*"
+    # 작업 브랜치 푸시는 개발 빌드 프리릴리스를 갱신한다.
+    # 병합 후에는 이 브랜치가 사라지므로 태그 릴리스만 남는다.
+    branches:
+      - "claude/**"
+
+# 연속 푸시 두 개가 같은 릴리스 태그를 동시에 만지지 않도록 직렬화한다
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # PR 검증: 타입체크 + 웹 빌드만 (Windows 러너 소모 없이)
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  build:
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+
+    # 릴리스 생성·첨부에 필요
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 의존성 설치
+        run: npm ci
+
+      - name: 앱 아이콘 생성
+        run: npm run tauri:icon
+
+      - name: 실행 파일 빌드
+        run: npm run tauri:build
+
+      # 아티팩트 저장 용량이 차면 실패하지만, 릴리스 첨부를 막지 않도록 함
+      - name: 실행 파일 업로드
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: OverlayPlacer-Windows
+          path: src-tauri/target/release/overlayplacer.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 릴리스 첨부
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v1.0.0-dev' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'OverlayPlacer 개발 빌드' }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          body: ${{ !startsWith(github.ref, 'refs/tags/v') && '작업 브랜치 최신 커밋으로 빌드한 Windows 실행 파일입니다. 설치 없이 바로 실행되며, 푸시할 때마다 갱신됩니다.' || '' }}
+          fail_on_unmatched_files: true
+          files: src-tauri/target/release/overlayplacer.exe

@@ -1,0 +1,27 @@
+{
+  "name": "overlayplacer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AI 협업형 UI 레이아웃 배치 편집기",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build --no-bundle",
+    "tauri:icon": "tauri icon src-tauri/icon-source.png"
+  },
+  "devDependencies": {
+    "@material-symbols/svg-400": "^0.45.10",
+    "@tauri-apps/cli": "^2.1.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.8"
+  },
+  "dependencies": {
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-fs": "^2.5.1"
+  }
+}

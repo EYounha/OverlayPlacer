@@ -1,4 +1,4 @@
-import type { OPElement, ProjectDoc, Tool, ElementType } from "../types";
+import type { Artboard, ElementType, Measure, OPElement, ProjectDoc, Tool } from "../types";
 import {
   buildElementIndex, collectImageKeys, createProject, findArtboard,
   findElement, parseProject, serializeAutosave
@@ -30,6 +30,8 @@ export interface EditorSettings {
   snapGuides: boolean;
   /** 이웃과 같은 간격·중앙 간격에 맞물리는 스냅 */
   snapGaps: boolean;
+  /** 겹친 대상을 클릭했을 때 무엇을 고를지 메뉴로 물어본다 */
+  pickMenu: boolean;
   gridSize: number;
 }
 
@@ -48,6 +50,11 @@ type Listener = () => void;
 export class Store {
   doc: ProjectDoc;
   selection: string[] = [];
+  /**
+   * 선택된 치수선. 요소 선택과는 배타적이다 — 삭제·인스펙터가
+   * 무엇을 대상으로 하는지 헷갈리지 않도록.
+   */
+  selectedMeasureId: string | null = null;
   activeArtboardId: string;
   view: ViewState = { zoom: 1, panX: 0, panY: 0 };
   tool: Tool = "select";
@@ -61,6 +68,7 @@ export class Store {
     snapElements: true,
     snapGuides: true,
     snapGaps: true,
+    pickMenu: true,
     gridSize: 8
   };
   dirty = false;
@@ -160,6 +168,8 @@ export class Store {
   private applyEntry(entry: HistoryEntry): void {
     this.doc = JSON.parse(entry.json);
     this.selection = entry.selection.filter((id) => findElement(this.doc, id));
+    // 되돌리기로 사라진 치수선을 가리킨 채로 두지 않는다
+    if (this.selectedMeasureId && !this.selectedMeasure()) this.selectedMeasureId = null;
     this.activeArtboardId = findArtboard(this.doc, entry.activeArtboardId)
       ? entry.activeArtboardId
       : this.doc.artboards[0].id;
@@ -170,7 +180,26 @@ export class Store {
 
   /* ---------- 선택 ---------- */
 
+  /** 치수선 선택. 요소 선택과 배타적이다 */
+  selectMeasure(id: string | null): void {
+    if (this.selectedMeasureId === id) return;
+    this.selectedMeasureId = id;
+    if (id !== null) this.selection = [];
+    this.emit("selection");
+  }
+
+  /** 선택된 치수선과 그것이 속한 아트보드 */
+  selectedMeasure(): { artboard: Artboard; measure: Measure } | null {
+    if (!this.selectedMeasureId) return null;
+    for (const ab of this.doc.artboards) {
+      const measure = ab.measures.find((m) => m.id === this.selectedMeasureId);
+      if (measure) return { artboard: ab, measure };
+    }
+    return null;
+  }
+
   select(ids: string[]): void {
+    this.selectedMeasureId = null;
     this.selection = ids.filter((id) => findElement(this.doc, id));
     if (this.selection.length > 0) {
       const ab = findElement(this.doc, this.selection[0])?.artboard;
@@ -180,6 +209,7 @@ export class Store {
   }
 
   toggleSelect(id: string): void {
+    this.selectedMeasureId = null;
     if (this.selection.includes(id)) {
       this.selection = this.selection.filter((s) => s !== id);
     } else {
@@ -189,8 +219,9 @@ export class Store {
   }
 
   clearSelection(): void {
-    if (this.selection.length === 0) return;
+    if (this.selection.length === 0 && this.selectedMeasureId === null) return;
     this.selection = [];
+    this.selectedMeasureId = null;
     this.emit("selection");
   }
 
@@ -269,6 +300,7 @@ export class Store {
     this.beginChange();
     this.doc = doc;
     this.selection = [];
+    this.selectedMeasureId = null;
     this.activeArtboardId = doc.artboards[0].id;
     this.commit();
   }

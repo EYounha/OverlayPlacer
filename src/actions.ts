@@ -53,6 +53,12 @@ export function selectParent(): void {
 /* ---------- 삭제 · 복제 ---------- */
 
 export function deleteSelection(): void {
+  // 치수선이 선택돼 있으면 그것이 삭제 대상이다 (요소 선택과 배타적)
+  const picked = store.selectedMeasure();
+  if (picked) {
+    deleteMeasure(picked.artboard.id, picked.measure.id);
+    return;
+  }
   const ids = store.editableSelection();
   if (ids.length === 0) return;
   store.beginChange();
@@ -534,6 +540,17 @@ export function deleteMeasure(artboardId: string, measureId: string): void {
   if (!ab) return;
   store.beginChange();
   ab.measures = ab.measures.filter((m) => m.id !== measureId);
+  if (store.selectedMeasureId === measureId) store.selectedMeasureId = null;
+  store.commit();
+}
+
+/** 재는 방향을 가로·세로로 바꾼다 */
+export function setMeasureAxis(artboardId: string, measureId: string, axis: "h" | "v"): void {
+  const ab = findArtboard(store.doc, artboardId);
+  const m = ab?.measures.find((x) => x.id === measureId);
+  if (!ab || !m || m.axis === axis) return;
+  store.beginChange();
+  m.axis = axis;
   store.commit();
 }
 

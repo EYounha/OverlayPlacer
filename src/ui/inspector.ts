@@ -1,10 +1,12 @@
 import { store } from "../state/store";
-import type { Anchor, OPElement, Unit } from "../types";
+import type { Anchor, Artboard, Measure, OPElement, Unit } from "../types";
 import { ANCHORS, ELEMENT_TYPES } from "../types";
 import { findArtboard, findElement } from "../model/doc";
-import { localRectOf, worldInfoOf, writeLocalRect } from "../model/geometry";
+import { buildWorldMap, localRectOf, worldInfoOf, writeLocalRect } from "../model/geometry";
+import { measureGeom } from "../model/measure";
 import {
-  align, clearBackgroundImage, distribute, loadBackgroundImage, spaceEvenly,
+  align, applyMeasure, clearBackgroundImage, deleteMeasure, distribute,
+  flipMeasureTarget, loadBackgroundImage, setMeasureAxis, spaceEvenly,
   type AlignTo
 } from "../actions";
 import { hasImage } from "../state/imageStore";
@@ -55,6 +57,11 @@ export class InspectorPanel {
 
   private render(): void {
     clearChildren(this.body);
+    const measure = store.selectedMeasure();
+    if (measure) {
+      this.renderMeasure(measure.artboard, measure.measure);
+      return;
+    }
     const sel = store.selectedElements();
     if (sel.length === 0) {
       this.renderArtboard();
@@ -63,6 +70,73 @@ export class InspectorPanel {
     } else {
       this.renderMulti(sel.length);
     }
+  }
+
+  /* ---------- 치수선 ---------- */
+
+  private renderMeasure(ab: Artboard, m: Measure): void {
+    const geom = measureGeom(ab, m, buildWorldMap(store.doc));
+    const nameOf = (id: string | null) =>
+      id === null ? "아트보드 가장자리" : findElement(store.doc, id)?.el.name ?? "(없음)";
+
+    this.body.append(
+      h("div", { class: "insp-section-title" }, "치수선"),
+      h(
+        "div",
+        { class: "insp-section" },
+        this.numField("간격", geom ? geom.gap : 0, 1, (v) => applyMeasure(ab.id, m.id, v), "px"),
+        this.segmented(
+          "방향",
+          [{ value: "h", label: "가로" }, { value: "v", label: "세로" }],
+          m.axis,
+          (v) => setMeasureAxis(ab.id, m.id, v as "h" | "v")
+        ),
+        m.toId === null
+          ? null
+          : this.segmented(
+              "움직일 쪽",
+              [{ value: "to", label: nameOf(m.toId) }, { value: "from", label: nameOf(m.fromId) }],
+              m.moves,
+              () => flipMeasureTarget(ab.id, m.id)
+            )
+      ),
+      h(
+        "div",
+        { class: "insp-section" },
+        h("div", { class: "insp-section-title" }, "기준"),
+        this.readonlyRow("기준", nameOf(m.fromId)),
+        this.readonlyRow("대상", nameOf(m.toId)),
+        h("button", {
+          class: "btn btn-small btn-danger",
+          onclick: () => deleteMeasure(ab.id, m.id)
+        }, "치수선 삭제")
+      )
+    );
+  }
+
+  private readonlyRow(label: string, value: string): HTMLElement {
+    return h(
+      "div",
+      { class: "field" },
+      h("label", { class: "field-label" }, label),
+      h("span", { class: "field-static" }, value)
+    );
+  }
+
+  /** 라벨 + 세그먼티드 버튼 한 줄 */
+  private segmented(
+    label: string, options: { value: string; label: string }[],
+    value: string, apply: (v: string) => void
+  ): HTMLElement {
+    const row = h("div", { class: "segmented" });
+    for (const opt of options) {
+      row.append(h("button", {
+        class: `seg-btn${opt.value === value ? " active" : ""}`,
+        title: opt.label,
+        onclick: () => apply(opt.value)
+      }, opt.label));
+    }
+    return h("div", { class: "field" }, h("label", { class: "field-label" }, label), row);
   }
 
   /* ---------- 다중 선택 ---------- */

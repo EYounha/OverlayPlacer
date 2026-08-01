@@ -124,6 +124,10 @@ export function initShortcuts(canvas: CanvasView): void {
       case "escape":
         closeMenus();
         if (canvas.cancelMeasure()) return;
+        if (store.selectedMeasureId) {
+          store.selectMeasure(null);
+          return;
+        }
         if (store.selection.length === 1) {
           const found = findElement(store.doc, store.selection[0]);
           if (found?.parent) {

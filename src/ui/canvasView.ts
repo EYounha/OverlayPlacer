@@ -10,7 +10,7 @@ import {
 } from "../model/geometry";
 import { dominantAxis, measureGeom, type MeasureGeom } from "../model/measure";
 import { h, svgEl, clearChildren } from "./dom";
-import { showMenu } from "./contextmenu";
+import { showMenu, type MenuItem } from "./contextmenu";
 import { buildElementContextMenu } from "./sharedMenus";
 import { addMeasure, applyMeasure, deleteMeasure, flipMeasureTarget, importText } from "../actions";
 import { toast } from "./toast";
@@ -25,6 +25,8 @@ const MAX_ZOOM = 32;
 const LABEL_LANE_PX = 14;
 /** 이름표를 밀어 내릴 수 있는 최대 줄 수. 넘으면 감춘다 */
 const LABEL_MAX_LANES = 6;
+/** 치수선을 집을 수 있는 여유 (화면 px) */
+const MEASURE_PICK_PX = 6;
 /** 이 크기보다 작게 보이는 요소는 이름표를 그리지 않는다 (화면 px) */
 const LABEL_MIN_W = 26;
 const LABEL_MIN_H = 11;
@@ -74,6 +76,8 @@ type DragState =
   | {
       mode: "move"; startWorld: Point; items: MoveItem[]; initAABB: Rect;
       artboardId: string; mutated: boolean;
+      /** 이 클릭이 선택을 바꿨는지 — 겹침 선택 메뉴를 언제 띄울지 판단한다 */
+      selectionChanged: boolean;
     }
   | {
       mode: "resize"; handle: Handle; id: string; initInfo: WorldInfo;
@@ -116,14 +120,25 @@ interface SnapTargets {
   rects: Rect[];
 }
 
-/** 화면 좌표로 계산해 둔 치수선 — 숫자 클릭 편집에 쓴다 */
+/** 화면 좌표로 계산해 둔 치수선 — 선 선택과 숫자 편집에 쓴다 */
 interface MeasureHit {
   artboardId: string;
   measure: Measure;
   geom: MeasureGeom;
-  /** 숫자 라벨의 화면 사각형 */
-  rect: Rect;
+  /** 숫자 칩의 화면 사각형 */
+  chip: Rect;
+  /** 선 양 끝의 화면 좌표 */
+  sa: Point;
+  sb: Point;
 }
+
+/** 마우스 아래에 있는 선택 후보 */
+type PickCandidate =
+  | {
+      kind: "element"; id: string; artboardId: string;
+      label: string; hint: string; swatch: string; selected: boolean;
+    }
+  | { kind: "measure"; id: string; label: string; hint: string; selected: boolean };
 
 export class CanvasView {
   root: HTMLElement;
@@ -150,6 +165,8 @@ export class CanvasView {
   /** 이번 프레임에 그린 치수선의 화면 위치 (숫자 클릭 판정용) */
   private measureHits: MeasureHit[] = [];
   private measureEditor: HTMLInputElement | null = null;
+  /** 선택 메뉴에서 가리키고 있는 대상 (요소 또는 치수선 id) */
+  private pickHighlight: string | null = null;
   /** 이름표 재배치는 배율이 바뀔 때만 다시 한다 */
   private labelZoom = 0;
   /** 이번 syncWorld에서 노드를 새로 만들었는지 (이름표 배치 필요 여부) */
@@ -576,6 +593,12 @@ export class CanvasView {
       }
     }
 
+    // 선택 메뉴에서 가리키고 있는 요소 강조
+    if (this.pickHighlight) {
+      const info = world.get(this.pickHighlight);
+      if (info) frag.append(this.outlinePolygon(info, "op-pick-outline"));
+    }
+
     // 선택 외곽선은 개수가 많아질 수 있으므로 노드를 재사용한다.
     // 매 프레임 수백 개를 새로 만들면 방향키 한 번에도 화면이 멈춘다.
     // 화면 밖 선택 항목의 외곽선은 그리지 않는다 — 전체 선택 시 대부분이
@@ -705,29 +728,34 @@ export class CanvasView {
         const geom = measureGeom(ab, m, world);
         if (!geom) continue;
         if (!rectsIntersect(visible, lineBounds(geom.a, geom.b))) continue;
-        const rect = this.appendMeasureLine(
-          frag, geom.axis, geom.a, geom.b, fmt(geom.gap), "op-measure"
+        const on = store.selectedMeasureId === m.id || this.pickHighlight === m.id;
+        const drawn = this.appendMeasureLine(
+          frag, geom.axis, geom.a, geom.b, fmt(geom.gap), "op-measure", on
         );
-        this.measureHits.push({ artboardId: ab.id, measure: m, geom, rect });
+        this.measureHits.push({ artboardId: ab.id, measure: m, geom, ...drawn });
       }
     }
   }
 
-  /** 치수선 한 줄을 그리고 숫자 칩의 화면 사각형을 돌려준다 */
+  /** 치수선 한 줄을 그리고 화면상의 선·숫자 칩 위치를 돌려준다 */
   private appendMeasureLine(
-    frag: DocumentFragment, axis: "h" | "v", aw: Point, bw: Point, text: string, cls: string
-  ): Rect {
+    frag: DocumentFragment, axis: "h" | "v", aw: Point, bw: Point,
+    text: string, cls: string, selected = false
+  ): { chip: Rect; sa: Point; sb: Point } {
+    const on = selected ? " sel" : "";
     const a = this.worldToScreen(aw);
     const b = this.worldToScreen(bw);
-    frag.append(svgEl("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: `${cls}-line` }));
-    const tick = 4;
+    frag.append(svgEl("line", {
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: `${cls}-line${on}`
+    }));
+    const tick = selected ? 6 : 4;
     for (const p of [a, b]) {
       frag.append(svgEl("line", {
         x1: axis === "h" ? p.x : p.x - tick,
         y1: axis === "h" ? p.y - tick : p.y,
         x2: axis === "h" ? p.x : p.x + tick,
         y2: axis === "h" ? p.y + tick : p.y,
-        class: `${cls}-tick`
+        class: `${cls}-tick${on}`
       }));
     }
     const w = textWidthPx(text) + 2;
@@ -735,16 +763,16 @@ export class CanvasView {
     // 가로 치수선은 숫자를 위로, 세로 치수선은 옆으로 비켜 놓는다
     const cx = (a.x + b.x) / 2 + (axis === "h" ? 0 : w / 2 + 5);
     const cy = (a.y + b.y) / 2 - (axis === "h" ? 9 : 0);
-    const rect: Rect = { x: cx - w / 2, y: cy - hh / 2, w, h: hh };
+    const chip: Rect = { x: cx - w / 2, y: cy - hh / 2, w, h: hh };
     frag.append(svgEl("rect", {
-      x: rect.x, y: rect.y, width: rect.w, height: rect.h, rx: 2, class: `${cls}-chip`
+      x: chip.x, y: chip.y, width: chip.w, height: chip.h, rx: 2, class: `${cls}-chip${on}`
     }));
     const label = svgEl("text", {
-      x: cx, y: cy + 4, class: `${cls}-text`, "text-anchor": "middle"
+      x: cx, y: cy + 4, class: `${cls}-text${on}`, "text-anchor": "middle"
     });
     label.textContent = text;
     frag.append(label);
-    return rect;
+    return { chip, sa: a, sb: b };
   }
 
   private handlePositions(info: WorldInfo): Record<Handle, Point> {
@@ -912,12 +940,24 @@ export class CanvasView {
       return;
     }
 
-    // 치수선 숫자를 찍으면 그 자리에서 값을 고친다
+    // 치수선: 선을 찍으면 선택, 숫자를 찍으면 그 자리에서 값을 고친다
     const measureHit = this.hitMeasure(screenLocal);
     if (measureHit) {
       e.preventDefault();
-      this.openMeasureEditor(measureHit);
+      store.selectMeasure(measureHit.hit.measure.id);
+      if (measureHit.onChip) this.openMeasureEditor(measureHit.hit);
       return;
+    }
+    store.selectMeasure(null);
+
+    // Alt+클릭 — 겹친 대상 중에서 곧바로 고른다
+    if (e.altKey && store.tool === "select") {
+      const cands = this.candidatesAt(world, screenLocal);
+      if (cands.length > 1) {
+        e.preventDefault();
+        this.showPickMenu(cands, e.clientX, e.clientY);
+        return;
+      }
     }
 
     // 치수선 도구
@@ -998,10 +1038,9 @@ export class CanvasView {
         store.toggleSelect(hit.id);
         return;
       }
-      if (!store.selection.includes(hit.id)) {
-        store.select([hit.id]);
-      }
-      this.beginMoveDrag(world, e.pointerId);
+      const already = store.selection.includes(hit.id);
+      if (!already) store.select([hit.id]);
+      this.beginMoveDrag(world, e.pointerId, !already);
       return;
     }
 
@@ -1020,15 +1059,101 @@ export class CanvasView {
 
   /* ---------- 치수선 조작 ---------- */
 
-  private hitMeasure(screen: Point): MeasureHit | null {
+  /**
+   * 치수선 집기. 숫자 칩이 먼저이고, 그다음이 선 자체다.
+   * 선을 집으면 선택만 하고, 숫자를 집으면 값 편집까지 연다.
+   */
+  private hitMeasure(screen: Point): { hit: MeasureHit; onChip: boolean } | null {
     if (!store.settings.showMeasures) return null;
     for (const hit of this.measureHits) {
-      const r = hit.rect;
+      const r = hit.chip;
       if (screen.x >= r.x && screen.x <= r.x + r.w && screen.y >= r.y && screen.y <= r.y + r.h) {
-        return hit;
+        return { hit, onChip: true };
+      }
+    }
+    for (const hit of this.measureHits) {
+      if (distToSegment(screen, hit.sa, hit.sb) <= MEASURE_PICK_PX) {
+        return { hit, onChip: false };
       }
     }
     return null;
+  }
+
+  /**
+   * 마우스 아래에 있는 모든 대상을 위에 그려진 순서대로 모은다.
+   * 겹쳐 있을 때 무엇을 고를지 메뉴로 물어보기 위한 목록이다.
+   */
+  private candidatesAt(world: Point, screen: Point): PickCandidate[] {
+    const out: PickCandidate[] = [];
+    if (store.settings.showMeasures) {
+      for (const hit of this.measureHits) {
+        const r = hit.chip;
+        const onChip = screen.x >= r.x && screen.x <= r.x + r.w &&
+          screen.y >= r.y && screen.y <= r.y + r.h;
+        if (!onChip && distToSegment(screen, hit.sa, hit.sb) > MEASURE_PICK_PX) continue;
+        out.push({
+          kind: "measure",
+          id: hit.measure.id,
+          label: `치수선 ${fmt(hit.geom.gap)}`,
+          hint: hit.measure.axis === "h" ? "가로" : "세로",
+          selected: store.selectedMeasureId === hit.measure.id
+        });
+      }
+    }
+    const map = this.worldMap();
+    // 히트 테스트와 같은 순서(위 → 아래, 자손 먼저)로 훑는다
+    const walk = (els: OPElement[], artboardId: string): void => {
+      for (let i = els.length - 1; i >= 0; i--) {
+        const el = els[i];
+        if (!el.visible || el.locked) continue;
+        walk(el.children, artboardId);
+        const info = map.get(el.id);
+        if (!info || !pointInElement(info, world)) continue;
+        const t = typeInfo(el.type);
+        out.push({
+          kind: "element",
+          id: el.id,
+          artboardId,
+          label: el.name || t.label,
+          hint: t.label,
+          swatch: el.color || t.color,
+          selected: store.selection.includes(el.id)
+        });
+      }
+    };
+    for (let i = store.doc.artboards.length - 1; i >= 0; i--) {
+      const ab = store.doc.artboards[i];
+      walk(ab.children, ab.id);
+    }
+    return out;
+  }
+
+  /** 겹친 대상 목록을 커서 옆에 띄운다. 항목에 올리면 캔버스에서 강조된다 */
+  private showPickMenu(cands: PickCandidate[], clientX: number, clientY: number): void {
+    const items: MenuItem[] = cands.map((c) => ({
+      label: c.label,
+      shortcut: c.selected ? "선택됨" : c.hint,
+      swatch: c.kind === "element" ? c.swatch : undefined,
+      checked: c.kind === "measure",
+      onHover: () => {
+        if (this.pickHighlight === c.id) return;
+        this.pickHighlight = c.id;
+        this.renderOverlay();
+      },
+      action: () => {
+        if (c.kind === "measure") {
+          store.selectMeasure(c.id);
+        } else {
+          store.setActiveArtboard(c.artboardId);
+          store.select([c.id]);
+        }
+      }
+    }));
+    showMenu(items, clientX + 2, clientY + 2, () => {
+      if (this.pickHighlight === null) return;
+      this.pickHighlight = null;
+      this.renderOverlay();
+    });
   }
 
   /**
@@ -1083,8 +1208,8 @@ export class CanvasView {
       type: "number",
       value: String(hit.geom.gap),
       style: {
-        left: `${Math.round(hit.rect.x + hit.rect.w / 2 - 30)}px`,
-        top: `${Math.round(hit.rect.y - 3)}px`
+        left: `${Math.round(hit.chip.x + hit.chip.w / 2 - 30)}px`,
+        top: `${Math.round(hit.chip.y - 3)}px`
       }
     }) as HTMLInputElement;
     this.measureEditor = input;
@@ -1122,7 +1247,7 @@ export class CanvasView {
     return true;
   }
 
-  private beginMoveDrag(world: Point, pointerId: number): void {
+  private beginMoveDrag(world: Point, pointerId: number, selectionChanged = false): void {
     const ids = store.editableSelection();
     if (ids.length === 0) return;
     const items: MoveItem[] = [];
@@ -1148,7 +1273,8 @@ export class CanvasView {
       items,
       initAABB: aabb ?? { x: world.x, y: world.y, w: 0, h: 0 },
       artboardId: store.activeArtboardId,
-      mutated: false
+      mutated: false,
+      selectionChanged
     };
     this.prepareSnapTargets(store.activeArtboardId, new Set(ids));
     this.viewport.setPointerCapture(pointerId);
@@ -1345,7 +1471,21 @@ export class CanvasView {
     switch (d.mode) {
       case "pan":
         break;
-      case "move":
+      case "move": {
+        if (d.mutated) {
+          store.commit();
+          break;
+        }
+        // 끌지 않고 그냥 눌렀다 뗀 경우. 이미 선택돼 있던 것을 다시 찍었다면
+        // "다른 걸 고르고 싶다"는 뜻으로 보고, 아래에 겹친 대상을 메뉴로 보여 준다.
+        //
+        // 첫 클릭에도 띄우면 고른 다음 곧바로 끌 수가 없다 — 메뉴가 화면을
+        // 덮어 다음 누름이 메뉴를 닫는 데 쓰이기 때문이다.
+        if (!store.settings.pickMenu || d.selectionChanged) break;
+        const cands = this.candidatesAt(d.startWorld, this.worldToScreen(d.startWorld));
+        if (cands.length > 1) this.showPickMenu(cands, e.clientX, e.clientY);
+        break;
+      }
       case "resize":
       case "rotate":
       case "artboard":
@@ -1404,9 +1544,10 @@ export class CanvasView {
 
   private onContextMenu(e: MouseEvent): void {
     e.preventDefault();
-    const measureHit = this.hitMeasure(this.screenPoint(e));
+    const measureHit = this.hitMeasure(this.screenPoint(e))?.hit;
     if (measureHit) {
       const { artboardId, measure } = measureHit;
+      store.selectMeasure(measure.id);
       showMenu([
         {
           label: "간격 수정…",
@@ -2016,6 +2157,16 @@ function hexWithAlpha(hex: string, alpha: number): string {
 
 function dist(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+/** 점에서 선분까지의 거리 — 치수선을 집는 데 쓴다 */
+function distToSegment(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return dist(p, a);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
 function nearest(candidates: number[], value: number, threshold: number): number | null {

@@ -660,6 +660,13 @@ select {
   stroke-width: 1.5;
 }
 
+/* 겹침 선택 메뉴에서 가리키고 있는 대상 */
+.op-pick-outline {
+  fill: rgba(58, 121, 187, 0.18);
+  stroke: #7fb3e6;
+  stroke-width: 2;
+}
+
 .op-multi-outline {
   fill: none;
   stroke: rgba(255, 138, 0, 0.45);
@@ -715,6 +722,19 @@ select {
   stroke-width: 1;
 }
 
+/* 선을 집을 수 있도록 보이지 않는 두께를 준다 */
+.op-measure-line {
+  pointer-events: stroke;
+  stroke-linecap: round;
+  cursor: pointer;
+}
+
+.op-measure-line.sel,
+.op-measure-tick.sel {
+  stroke: #ffd08a;
+  stroke-width: 2;
+}
+
 .op-measure-chip {
   fill: #262626;
   stroke: var(--measure);
@@ -723,11 +743,22 @@ select {
   cursor: text;
 }
 
+.op-measure-chip.sel {
+  fill: #4a3411;
+  stroke: #ffd08a;
+  stroke-width: 1.6;
+}
+
 .op-measure-text {
   fill: #ffd49a;
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+}
+
+.op-measure-text.sel {
+  fill: #fff3de;
+  font-weight: 600;
 }
 
 /* 드래그 중 맞물린 간격 — 스냅과 같은 색으로 구분한다 */
@@ -826,7 +857,8 @@ select {
 }
 
 .field > .field-input,
-.field > .field-row {
+.field > .field-row,
+.field > .segmented {
   flex: 1;
   min-width: 0;
 }
@@ -860,6 +892,16 @@ select {
   display: flex;
   align-items: center;
   gap: 5px;
+}
+
+.field-static {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .field-suffix,
@@ -1188,6 +1230,15 @@ input[type="number"] {
 .menu-check {
   width: 14px;
   font-size: 10px;
+  flex-shrink: 0;
+}
+
+/* 겹침 선택 메뉴의 요소 타입 색 표식 */
+.menu-swatch {
+  width: 8px;
+  height: 8px;
+  margin: 0 3px;
+  border-radius: 2px;
   flex-shrink: 0;
 }
 

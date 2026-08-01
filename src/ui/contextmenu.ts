@@ -6,21 +6,30 @@ export interface MenuItem {
   separator?: boolean;
   disabled?: boolean;
   checked?: boolean;
+  /** 왼쪽에 찍을 색 표식 (요소 선택 메뉴에서 타입 색으로 쓴다) */
+  swatch?: string;
+  /** 항목 위에 올렸을 때 — 캔버스에서 해당 대상을 강조하는 데 쓴다 */
+  onHover?: () => void;
   action?: () => void;
   children?: MenuItem[];
 }
 
 let openRoot: HTMLElement | null = null;
+let closeHandler: (() => void) | null = null;
 
 export function closeMenus(): void {
   openRoot?.remove();
   openRoot = null;
+  const fn = closeHandler;
+  closeHandler = null;
+  fn?.();
 }
 
-export function showMenu(items: MenuItem[], x: number, y: number): void {
+export function showMenu(items: MenuItem[], x: number, y: number, onClose?: () => void): void {
   closeMenus();
   const root = h("div", { class: "menu-layer" });
   openRoot = root;
+  closeHandler = onClose ?? null;
   root.addEventListener("pointerdown", (e) => {
     if (e.target === root) closeMenus();
   });
@@ -39,7 +48,9 @@ function buildMenu(layer: HTMLElement, items: MenuItem[], x: number, y: number):
     const row = h(
       "div",
       { class: `menu-item${item.disabled ? " disabled" : ""}` },
-      h("span", { class: "menu-check" }, item.checked ? "✓" : ""),
+      item.swatch
+        ? h("span", { class: "menu-swatch", style: { background: item.swatch } })
+        : h("span", { class: "menu-check" }, item.checked ? "✓" : ""),
       h("span", { class: "menu-label" }, item.label ?? ""),
       item.children
         ? h("span", { class: "menu-arrow" }, "▸")
@@ -57,6 +68,7 @@ function buildMenu(layer: HTMLElement, items: MenuItem[], x: number, y: number):
       } else {
         row.addEventListener("pointerenter", () => {
           menu.querySelectorAll(".menu-popup").forEach((m) => m.remove());
+          item.onHover?.();
         });
         row.addEventListener("click", () => {
           closeMenus();

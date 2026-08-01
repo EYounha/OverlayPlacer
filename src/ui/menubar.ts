@@ -77,7 +77,12 @@ export class MenuBar {
       { label: "복사", shortcut: "Ctrl+C", disabled: store.selection.length === 0, action: copySelection },
       { label: "붙여넣기", shortcut: "Ctrl+V", action: paste },
       { label: "복제", shortcut: "Ctrl+D", disabled: store.selection.length === 0, action: duplicateSelection },
-      { label: "삭제", shortcut: "Del", disabled: store.selection.length === 0, action: deleteSelection },
+      {
+        label: store.selectedMeasureId ? "치수선 삭제" : "삭제",
+        shortcut: "Del",
+        disabled: store.selection.length === 0 && !store.selectedMeasureId,
+        action: deleteSelection
+      },
       { separator: true },
       { label: "전체 선택", shortcut: "Ctrl+A", action: selectAll }
     ];
@@ -99,6 +104,12 @@ export class MenuBar {
       { separator: true },
       { label: "세로 가이드 추가", action: () => this.canvas.addGuide("v") },
       { label: "가로 가이드 추가", action: () => this.canvas.addGuide("h") },
+      { separator: true },
+      {
+        label: "겹칠 때 선택 메뉴",
+        checked: s.pickMenu,
+        action: () => store.updateSettings({ pickMenu: !s.pickMenu })
+      },
       { separator: true },
       { label: "요소에 스냅", checked: s.snapElements, action: () => store.updateSettings({ snapElements: !s.snapElements }) },
       { label: "간격에 스냅", checked: s.snapGaps, action: () => store.updateSettings({ snapGaps: !s.snapGaps }) },
